@@ -73,8 +73,16 @@ void STMClient::resume( void )
     exit( 1 );
   }
 
-  /* Put terminal in application-cursor-key mode */
-  swrite( STDOUT_FILENO, display.open().c_str() );
+  if ( scrollback_active ) {
+    /* stay on the primary screen; whatever ran while suspended goes
+       away at the next scrollback rebuild */
+    swrite( STDOUT_FILENO, "\033[?1h" );
+    scrollback_dirty = true;
+    last_scrollback_activity = timestamp();
+  } else {
+    /* Put terminal in application-cursor-key mode */
+    swrite( STDOUT_FILENO, display.open().c_str() );
+  }
 
   /* Flag that outer terminal state is unknown */
   repaint_requested = true;
@@ -296,16 +304,126 @@ void STMClient::output_new_frame( void )
   /* fetch target state */
   new_state = network->get_latest_remote_state().state.get_fb();
 
+  /* feed the host terminal's scrollback before drawing the frame */
+  std::string prefix;
+  if ( scrollback_wanted ) {
+    prefix = update_scrollback( new_state );
+  }
+
   /* apply local overlays */
   overlays.apply( new_state );
 
   /* calculate minimal difference from where we are */
-  const std::string diff( display.new_frame( !repaint_requested, local_framebuffer, new_state ) );
-  swrite( STDOUT_FILENO, diff.data(), diff.size() );
+  prefix += display.new_frame( !repaint_requested, local_framebuffer, new_state );
+  swrite( STDOUT_FILENO, prefix.data(), prefix.size() );
 
   repaint_requested = false;
 
   local_framebuffer = new_state;
+}
+
+std::string STMClient::update_scrollback( const Terminal::Framebuffer& fb )
+{
+  static const uint64_t REPLAY_DEBOUNCE = 250; /* ms of scroll quiet before a rebuild */
+
+  const std::shared_ptr<Terminal::HistoryRing>& ring = fb.get_history();
+  if ( !ring ) {
+    /* stock server, or no history received yet */
+    return std::string();
+  }
+
+  std::string out;
+  const uint64_t now = timestamp();
+
+  if ( !scrollback_active ) {
+    /* First history from the server: leave the alternate screen and
+       manage the host terminal's real scrollback from here on. */
+    scrollback_active = true;
+    display.set_scroll_shortcut( false );
+    out += display.exit_alternate_screen();
+    repaint_requested = true; /* paint the viewport over the restored primary screen */
+    scrollback_dirty = true;
+  }
+
+  const uint64_t target_rows = fb.get_history_row_count();
+  const uint64_t clears = fb.get_history_clear_count();
+
+  if ( target_rows != last_seen_history_rows ) {
+    last_seen_history_rows = target_rows;
+    last_scrollback_activity = now;
+  }
+
+  if ( ( clears != emitted_clear_count ) || ring->has_discontinuity() ) {
+    scrollback_dirty = true;
+  }
+
+  if ( !scrollback_dirty && ( target_rows > emitted_history_rows ) ) {
+    const int height = local_framebuffer.ds.get_height();
+    const uint64_t r = target_rows - emitted_history_rows;
+    if ( ( emitted_history_rows == local_framebuffer.get_history_row_count() ) && ( r < (uint64_t)height )
+         && ( local_framebuffer.ds.get_width() == fb.ds.get_width() ) && ( height == fb.ds.get_height() )
+         && overlays.get_notification_engine().get_notification_string().empty() ) {
+      /* Fast path: push the top r rows -- precisely the rows that
+         scrolled off server-side -- into the host terminal's
+         scrollback with real linefeeds, then hand the differ a
+         pre-scrolled baseline so it repaints only what changed. */
+      char tmp[32];
+      snprintf( tmp, sizeof tmp, "\033[%d;1H", height );
+      out += tmp;
+      out.append( r, '\n' );
+
+      local_framebuffer.ds.set_scrolling_region( 0, height - 1 );
+      local_framebuffer.scroll( (int)r );
+      local_framebuffer.ds.move_row( height - 1, false );
+      local_framebuffer.ds.move_col( 0, false, false );
+      emitted_history_rows = target_rows;
+    } else {
+      /* resize in flight, overlay over the top rows, or a jump bigger
+         than the screen: rebuild once the burst settles */
+      scrollback_dirty = true;
+    }
+  }
+
+  if ( scrollback_dirty && ( now - last_scrollback_activity >= REPLAY_DEBOUNCE ) ) {
+    if ( ring->size() || ( emitted_history_rows > 0 ) || ( clears != emitted_clear_count ) ) {
+      out += replay_scrollback();
+      repaint_requested = true;
+    }
+    scrollback_dirty = false;
+    ring->clear_discontinuity();
+    emitted_clear_count = clears;
+    emitted_history_rows = target_rows;
+  }
+
+  return out;
+}
+
+std::string STMClient::replay_scrollback( void )
+{
+  const std::shared_ptr<Terminal::HistoryRing>& ring = network->get_latest_remote_state().state.get_fb().get_history();
+  std::string out;
+
+  /* reset margins and renditions, hide cursor, wipe screen and host scrollback */
+  out.append( "\033[r\033[0m\033[?25l\033[H\033[2J\033[3J" );
+
+  /* Print the transcript as logical lines and let the host terminal
+     wrap them: its scrollback gets native reflow-on-resize metadata. */
+  if ( ring ) {
+    for ( Terminal::HistoryRing::const_iterator it = ring->begin(); it != ring->end(); ++it ) {
+      out.append( it->rendered );
+      out.append( "\r\n" );
+    }
+  }
+
+  /* Push what remains in the viewport out the top.  The count is
+     exact without any wrap arithmetic: at most height-1 rows of
+     transcript remain on screen, and linefeeds travel to the bottom
+     margin before they start scrolling, so blank filler never gets
+     pushed out. */
+  const int height = window_size.ws_row > 1 ? window_size.ws_row : 2;
+  out.append( height - 1, '\n' );
+
+  return out;
 }
 
 void STMClient::process_network_input( void )
@@ -442,6 +560,13 @@ bool STMClient::process_resize( void )
   /* tell prediction engine */
   overlays.get_prediction_engine().reset();
 
+  /* the host terminal reshuffles rows between viewport and scrollback
+     on its own during a resize; rebuild once the dust settles */
+  if ( scrollback_active ) {
+    scrollback_dirty = true;
+    last_scrollback_activity = timestamp();
+  }
+
   return true;
 }
 
@@ -471,6 +596,11 @@ bool STMClient::main( void )
       /* Handle startup "Connecting..." message */
       if ( still_connecting() ) {
         wait_time = std::min( 250, wait_time );
+      }
+
+      /* wake up to run a pending scrollback rebuild */
+      if ( scrollback_dirty ) {
+        wait_time = std::min( 100, wait_time );
       }
 
       /* poll for events */

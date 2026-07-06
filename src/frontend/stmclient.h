@@ -75,12 +75,12 @@ private:
   unsigned int verbose;
 
   /* host-terminal scrollback */
-  bool scrollback_wanted;         /* ask the server for history */
-  bool scrollback_active;         /* first HistoryLines seen; we left the alternate screen */
-  bool scrollback_dirty;          /* host scrollback needs a clear-and-replay */
-  uint64_t emitted_history_rows;  /* server row_count already pushed into host scrollback */
-  uint64_t emitted_clear_count;   /* server clear_count already honored */
-  uint64_t emitted_history_lines; /* ring seq already covered (via fast path or replay) */
+  bool scrollback_wanted;            /* ask the server for history */
+  bool scrollback_active;            /* first HistoryLines seen; we left the alternate screen */
+  bool scrollback_dirty;             /* host scrollback needs a clear-and-replay */
+  uint64_t emitted_history_rows;     /* server row_count already pushed into host scrollback */
+  uint64_t emitted_clear_count;      /* server clear_count already honored */
+  uint64_t last_seen_history_rows;   /* to notice rows still streaming in */
   uint64_t last_scrollback_activity; /* timestamp for replay debounce */
 
   void main_init( void );
@@ -89,8 +89,10 @@ private:
   bool process_resize( void );
 
   void output_new_frame( void );
-  void update_scrollback( const Terminal::Framebuffer& fb );
-  void replay_scrollback( void );
+  /* Returns bytes to write before the frame diff; may mutate
+     local_framebuffer (pre-scrolled baseline) and repaint_requested. */
+  std::string update_scrollback( const Terminal::Framebuffer& fb );
+  std::string replay_scrollback( void );
 
   bool still_connecting( void ) const
   {
@@ -113,7 +115,7 @@ public:
       network(), display( true ) /* use TERM environment var to initialize display */, connecting_notification(),
       repaint_requested( false ), lf_entered( false ), quit_sequence_started( false ), clean_shutdown( false ),
       verbose( s_verbose ), scrollback_wanted( true ), scrollback_active( false ), scrollback_dirty( false ),
-      emitted_history_rows( 0 ), emitted_clear_count( 0 ), emitted_history_lines( 0 ),
+      emitted_history_rows( 0 ), emitted_clear_count( 0 ), last_seen_history_rows( 0 ),
       last_scrollback_activity( 0 )
   {
     if ( getenv( "MOSH_NO_SCROLLBACK" ) ) {

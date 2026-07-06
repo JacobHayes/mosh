@@ -76,6 +76,10 @@ private:
 
   const char *smcup, *rmcup; /* enter and exit alternate screen mode */
 
+  bool scroll_shortcut; /* may emit real scroll sequences; turned off when
+                           the host terminal's scrollback is managed
+                           explicitly, so no stray lines can leak into it */
+
   bool put_row( bool initialized,
                 FrameState& frame,
                 const Framebuffer& f,
@@ -88,6 +92,9 @@ private:
 public:
   std::string open() const;
   std::string close() const;
+
+  void set_scroll_shortcut( bool s ) { scroll_shortcut = s; }
+  std::string exit_alternate_screen() const { return std::string( rmcup ? rmcup : "" ); }
 
   std::string new_frame( bool initialized, const Framebuffer& last, const Framebuffer& f ) const;
 

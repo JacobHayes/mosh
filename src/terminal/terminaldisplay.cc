@@ -164,7 +164,7 @@ std::string Display::new_frame( bool initialized, const Framebuffer& last, const
   }
 
   /* shortcut -- has display moved up by a certain number of lines? */
-  if ( initialized ) {
+  if ( initialized && scroll_shortcut ) {
     int lines_scrolled = 0;
     int scroll_height = 0;
 
