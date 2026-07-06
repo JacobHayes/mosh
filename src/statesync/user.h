@@ -34,6 +34,7 @@
 #define USER_HPP
 
 #include <cassert>
+#include <cstdint>
 #include <deque>
 #include <list>
 #include <string>
@@ -44,7 +45,15 @@ namespace Network {
 enum UserEventType
 {
   UserByteType = 0,
-  ResizeType = 1
+  ResizeType = 1,
+  FeatureType = 2
+};
+
+/* feature bits for FeatureType events */
+enum
+{
+  FEATURE_SCROLLBACK = 1, /* server sends scrollback history */
+  FEATURE_ALTSCREEN = 2   /* server emulates DECSET 1047/1048/1049 */
 };
 
 class UserEvent
@@ -53,10 +62,16 @@ public:
   UserEventType type;
   Parser::UserByte userbyte;
   Parser::Resize resize;
+  uint32_t features;
 
-  UserEvent( const Parser::UserByte& s_userbyte ) : type( UserByteType ), userbyte( s_userbyte ), resize( -1, -1 )
+  UserEvent( const Parser::UserByte& s_userbyte )
+    : type( UserByteType ), userbyte( s_userbyte ), resize( -1, -1 ), features( 0 )
   {}
-  UserEvent( const Parser::Resize& s_resize ) : type( ResizeType ), userbyte( 0 ), resize( s_resize ) {}
+  UserEvent( const Parser::Resize& s_resize ) : type( ResizeType ), userbyte( 0 ), resize( s_resize ), features( 0 )
+  {}
+  explicit UserEvent( uint32_t s_features )
+    : type( FeatureType ), userbyte( 0 ), resize( -1, -1 ), features( s_features )
+  {}
 
 private:
   UserEvent();
@@ -64,7 +79,8 @@ private:
 public:
   bool operator==( const UserEvent& x ) const
   {
-    return ( type == x.type ) && ( userbyte == x.userbyte ) && ( resize == x.resize );
+    return ( type == x.type ) && ( userbyte == x.userbyte ) && ( resize == x.resize )
+           && ( features == x.features );
   }
 };
 
@@ -78,10 +94,12 @@ public:
 
   void push_back( const Parser::UserByte& s_userbyte ) { actions.push_back( UserEvent( s_userbyte ) ); }
   void push_back( const Parser::Resize& s_resize ) { actions.push_back( UserEvent( s_resize ) ); }
+  void push_back_feature( uint32_t features ) { actions.push_back( UserEvent( features ) ); }
 
   bool empty( void ) const { return actions.empty(); }
   size_t size( void ) const { return actions.size(); }
   const Parser::Action& get_action( unsigned int i ) const;
+  const UserEvent& get_event( unsigned int i ) const { return actions[i]; }
 
   /* interface for Network::Transport */
   void subtract( const UserStream* prefix );

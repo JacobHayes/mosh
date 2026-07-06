@@ -81,6 +81,7 @@
 #endif
 
 #include "src/statesync/completeterminal.h"
+#include "src/terminal/terminalhistory.h"
 #include "src/statesync/user.h"
 #include "src/util/fatal_assert.h"
 #include "src/util/locale_utils.h"
@@ -431,6 +432,16 @@ static int run_server( const char* desired_ip,
   /* open parser and terminal */
   Terminal::Complete terminal( window_size.ws_col, window_size.ws_row );
 
+  /* capture scrollback history (sent only to clients that ask for it) */
+  {
+    size_t scrollback_lines = Terminal::HISTORY_DEFAULT_LINES;
+    const char* scrollback_env = getenv( "MOSH_SCROLLBACK_LINES" );
+    if ( scrollback_env && *scrollback_env ) {
+      scrollback_lines = strtoul( scrollback_env, NULL, 10 );
+    }
+    terminal.enable_history( scrollback_lines, true );
+  }
+
   /* open network */
   Network::UserStream blank;
   using NetworkPointer = std::shared_ptr<ServerConnection>;
@@ -770,6 +781,12 @@ static void serve( int host_fd,
           us.apply_string( network.get_remote_diff() );
           /* apply userstream to terminal */
           for ( size_t i = 0; i < us.size(); i++ ) {
+            if ( us.get_event( i ).type == Network::FeatureType ) {
+              if ( us.get_event( i ).features & Network::FEATURE_SCROLLBACK ) {
+                terminal.set_history_subscribed( true );
+              }
+              continue;
+            }
             const Parser::Action& action = us.get_action( i );
             if ( typeid( action ) == typeid( Parser::Resize ) ) {
               /* apply only the last consecutive Resize action */

@@ -34,6 +34,7 @@
 
 #include "src/protobufs/hostinput.pb.h"
 #include "src/statesync/completeterminal.h"
+#include "src/terminal/terminalhistory.h"
 #include "src/util/fatal_assert.h"
 
 using namespace std;
@@ -90,6 +91,33 @@ string Complete::diff_from( const Complete& existing ) const
     }
   }
 
+  if ( history_subscribed ) {
+    const Framebuffer& my_fb = get_fb();
+    const Framebuffer& ex_fb = existing.get_fb();
+    if ( ( my_fb.get_history_line_count() != ex_fb.get_history_line_count() )
+         || ( my_fb.get_history_row_count() != ex_fb.get_history_row_count() )
+         || ( my_fb.get_history_clear_count() != ex_fb.get_history_clear_count() ) ) {
+      HistoryLines* hl = output.add_instruction()->MutableExtension( history );
+      hl->set_line_count( my_fb.get_history_line_count() );
+      hl->set_row_count( my_fb.get_history_row_count() );
+      hl->set_clear_count( my_fb.get_history_clear_count() );
+      const std::shared_ptr<Terminal::HistoryRing>& ring = my_fb.get_history();
+      if ( ring ) {
+        /* The shared ring may have grown past this state's snapshot;
+           send only lines the receiver lacks *and* this state had. */
+        Terminal::HistoryRing::const_iterator it = ring->lower_bound( ex_fb.get_history_line_count() );
+        bool first = true;
+        for ( ; it != ring->end() && it->seq < my_fb.get_history_line_count(); ++it ) {
+          if ( first ) {
+            hl->set_first_seq( it->seq );
+            first = false;
+          }
+          hl->add_lines( it->rendered );
+        }
+      }
+    }
+  }
+
   return output.SerializeAsString();
 }
 
@@ -114,6 +142,23 @@ void Complete::apply_string( const string& diff )
       uint64_t inst_echo_ack_num = input.instruction( i ).GetExtension( echoack ).echo_ack_num();
       assert( inst_echo_ack_num >= echo_ack );
       echo_ack = inst_echo_ack_num;
+    } else if ( input.instruction( i ).HasExtension( history ) ) {
+      const HistoryLines& hl = input.instruction( i ).GetExtension( history );
+      Framebuffer& fb = terminal.get_mutable_fb();
+      if ( !fb.get_history() ) {
+        /* receiving side; capture stays off */
+        fb.enable_history( Terminal::HISTORY_DEFAULT_LINES, false );
+      }
+      const std::shared_ptr<Terminal::HistoryRing>& ring = fb.get_history();
+      ring->receive_clear( hl.clear_count() );
+      uint64_t seq = hl.first_seq();
+      for ( int j = 0; j < hl.lines_size(); j++ ) {
+        ring->receive_line( seq++, hl.lines( j ) );
+      }
+      if ( hl.line_count() > ring->get_next_seq() ) {
+        ring->set_discontinuity();
+      }
+      fb.set_history_counters( hl.line_count(), hl.row_count(), hl.clear_count() );
     }
   }
 }

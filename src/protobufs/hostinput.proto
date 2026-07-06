@@ -25,8 +25,21 @@ message EchoAck {
   optional uint64 echo_ack_num = 8;
 }
 
+// Scrollback history synchronization.  Counters are totals as of the
+// sender's state; lines carry the logical lines the receiver is
+// missing (oldest first), pre-rendered as self-contained ANSI strings.
+// Stock receivers ignore this instruction.
+message HistoryLines {
+  optional uint64 line_count = 1;   // logical lines ever finalized
+  optional uint64 row_count = 2;    // display rows ever scrolled off
+  optional uint64 clear_count = 3;  // scrollback-clear generation (CSI 3 J)
+  optional uint64 first_seq = 4;    // seq of lines[0]
+  repeated bytes lines = 5;
+}
+
 extend Instruction {
   optional HostBytes hostbytes = 2;
   optional ResizeMessage resize = 3;
   optional EchoAck echoack = 7;
+  optional HistoryLines history = 8;
 }

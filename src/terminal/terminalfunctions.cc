@@ -94,6 +94,9 @@ static void CSI_ED( Framebuffer* fb, Dispatcher* dispatch )
         fb->reset_row( fb->get_mutable_row( y ) );
       }
       break;
+    case 3: /* saved lines (xterm) -- clears scrollback, leaves screen alone */
+      fb->clear_history_scrollback();
+      break;
     default:
       break;
   }

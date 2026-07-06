@@ -89,6 +89,10 @@ std::string UserStream::diff_from( const UserStream& existing ) const
         new_inst->MutableExtension( resize )->set_width( my_it->resize.width );
         new_inst->MutableExtension( resize )->set_height( my_it->resize.height );
       } break;
+      case FeatureType: {
+        Instruction* new_inst = output.add_instruction();
+        new_inst->MutableExtension( feature )->set_features( my_it->features );
+      } break;
       default:
         assert( !"unexpected event type" );
         break;
@@ -114,20 +118,25 @@ void UserStream::apply_string( const std::string& diff )
     } else if ( input.instruction( i ).HasExtension( resize ) ) {
       actions.push_back( UserEvent( Resize( input.instruction( i ).GetExtension( resize ).width(),
                                             input.instruction( i ).GetExtension( resize ).height() ) ) );
+    } else if ( input.instruction( i ).HasExtension( feature ) ) {
+      actions.push_back( UserEvent( input.instruction( i ).GetExtension( feature ).features() ) );
     }
   }
 }
 
 const Parser::Action& UserStream::get_action( unsigned int i ) const
 {
+  static const Parser::Ignore nothing = Parser::Ignore();
   switch ( actions[i].type ) {
     case UserByteType:
       return actions[i].userbyte;
     case ResizeType:
       return actions[i].resize;
+    case FeatureType:
+      /* not a terminal action; consumers inspect get_event() instead */
+      return nothing;
     default:
       assert( !"unexpected action type" );
-      static const Parser::Ignore nothing = Parser::Ignore();
       return nothing;
   }
 }

@@ -54,6 +54,7 @@
 
 #include "src/statesync/completeterminal.h"
 #include "src/statesync/user.h"
+#include "src/terminal/terminalhistory.h"
 #include "src/util/fatal_assert.h"
 #include "src/util/locale_utils.h"
 #include "src/util/pty_compat.h"
@@ -260,9 +261,23 @@ void STMClient::main_init( void )
   /* open network */
   Network::UserStream blank;
   Terminal::Complete local_terminal( window_size.ws_col, window_size.ws_row );
+  if ( scrollback_wanted ) {
+    /* receive-only ring; all received Complete states share it */
+    size_t scrollback_lines = Terminal::HISTORY_DEFAULT_LINES;
+    const char* scrollback_env = getenv( "MOSH_SCROLLBACK_LINES" );
+    if ( scrollback_env && *scrollback_env ) {
+      scrollback_lines = strtoul( scrollback_env, NULL, 10 );
+    }
+    local_terminal.enable_history( scrollback_lines, false );
+  }
   network = NetworkPointer( new NetworkType( blank, local_terminal, key.c_str(), ip.c_str(), port.c_str() ) );
 
   network->set_send_delay( 1 ); /* minimal delay on outgoing keystrokes */
+
+  /* ask for scrollback history (ignored by stock servers) */
+  if ( scrollback_wanted ) {
+    network->get_current_state().push_back_feature( Network::FEATURE_SCROLLBACK );
+  }
 
   /* tell server the size of the terminal */
   network->get_current_state().push_back( Parser::Resize( window_size.ws_col, window_size.ws_row ) );

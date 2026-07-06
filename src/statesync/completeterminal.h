@@ -58,11 +58,17 @@ private:
   input_history_type input_history;
   uint64_t echo_ack;
 
+  /* Client announced FEATURE_SCROLLBACK; gates HistoryLines in diffs.
+     Not part of state equality: flipping it alone changes nothing the
+     receiver has to be told about immediately. */
+  bool history_subscribed;
+
   static const int ECHO_TIMEOUT = 50; /* for late ack */
 
 public:
   Complete( size_t width, size_t height )
-    : parser(), terminal( width, height ), display( false ), actions(), input_history(), echo_ack( 0 )
+    : parser(), terminal( width, height ), display( false ), actions(), input_history(), echo_ack( 0 ),
+      history_subscribed( false )
   {}
 
   std::string act( const std::string& str );
@@ -70,6 +76,11 @@ public:
 
   const Framebuffer& get_fb( void ) const { return terminal.get_fb(); }
   void reset_input( void ) { parser.reset_input(); }
+
+  /* scrollback history */
+  void enable_history( size_t capacity, bool capture ) { terminal.get_mutable_fb().enable_history( capacity, capture ); }
+  void set_history_subscribed( bool s ) { history_subscribed = s; }
+  bool get_history_subscribed( void ) const { return history_subscribed; }
   uint64_t get_echo_ack( void ) const { return echo_ack; }
   bool set_echo_ack( uint64_t now );
   void register_input_frame( uint64_t n, uint64_t now );

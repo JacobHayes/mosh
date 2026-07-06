@@ -80,6 +80,7 @@ public:
   std::string read_octets_to_host( void );
 
   const Framebuffer& get_fb( void ) const { return fb; }
+  Framebuffer& get_mutable_fb( void ) { return fb; }
 
   bool operator==( Emulator const& x ) const;
 };

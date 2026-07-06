@@ -33,6 +33,7 @@
 #ifndef STM_CLIENT_HPP
 #define STM_CLIENT_HPP
 
+#include <cstdlib>
 #include <memory>
 #include <string>
 
@@ -73,12 +74,23 @@ private:
   bool clean_shutdown;
   unsigned int verbose;
 
+  /* host-terminal scrollback */
+  bool scrollback_wanted;         /* ask the server for history */
+  bool scrollback_active;         /* first HistoryLines seen; we left the alternate screen */
+  bool scrollback_dirty;          /* host scrollback needs a clear-and-replay */
+  uint64_t emitted_history_rows;  /* server row_count already pushed into host scrollback */
+  uint64_t emitted_clear_count;   /* server clear_count already honored */
+  uint64_t emitted_history_lines; /* ring seq already covered (via fast path or replay) */
+  uint64_t last_scrollback_activity; /* timestamp for replay debounce */
+
   void main_init( void );
   void process_network_input( void );
   bool process_user_input( int fd );
   bool process_resize( void );
 
   void output_new_frame( void );
+  void update_scrollback( const Terminal::Framebuffer& fb );
+  void replay_scrollback( void );
 
   bool still_connecting( void ) const
   {
@@ -100,8 +112,17 @@ public:
       saved_termios(), raw_termios(), window_size(), local_framebuffer( 1, 1 ), new_state( 1, 1 ), overlays(),
       network(), display( true ) /* use TERM environment var to initialize display */, connecting_notification(),
       repaint_requested( false ), lf_entered( false ), quit_sequence_started( false ), clean_shutdown( false ),
-      verbose( s_verbose )
+      verbose( s_verbose ), scrollback_wanted( true ), scrollback_active( false ), scrollback_dirty( false ),
+      emitted_history_rows( 0 ), emitted_clear_count( 0 ), emitted_history_lines( 0 ),
+      last_scrollback_activity( 0 )
   {
+    if ( getenv( "MOSH_NO_SCROLLBACK" ) ) {
+      scrollback_wanted = false;
+    }
+    const char* scrollback_env = getenv( "MOSH_SCROLLBACK_LINES" );
+    if ( scrollback_env && !strcmp( scrollback_env, "0" ) ) {
+      scrollback_wanted = false;
+    }
     if ( predict_mode ) {
       if ( !strcmp( predict_mode, "always" ) ) {
         overlays.get_prediction_engine().set_display_preference( Overlay::PredictionEngine::Always );

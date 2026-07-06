@@ -21,7 +21,16 @@ message ResizeMessage {
   optional int32 height = 6;
 }
 
+// Optional-feature negotiation.  A client announces the features it
+// supports; the server enables them only after seeing this.  Stock
+// servers ignore the instruction, stock clients never send it, so
+// either combination degrades to stock behavior.
+message FeatureRequest {
+  optional uint32 features = 1;  // bitmask; see Network::UserEvent
+}
+
 extend Instruction {
   optional Keystroke keystroke = 2;
   optional ResizeMessage resize = 3;
+  optional FeatureRequest feature = 4;
 }

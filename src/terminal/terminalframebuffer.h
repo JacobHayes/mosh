@@ -46,6 +46,8 @@
 /* Terminal framebuffer */
 
 namespace Terminal {
+class HistoryRing;
+
 using color_type = uint32_t;
 
 class Renditions
@@ -420,6 +422,14 @@ private:
   unsigned int bell_count;
   bool title_initialized; /* true if the window title has been set via an OSC */
 
+  /* Scrollback history.  The ring is shared among all Framebuffer
+     copies held by the transport; the counters are per-state
+     snapshots and are part of the synchronized state. */
+  std::shared_ptr<HistoryRing> history;
+  uint64_t history_line_count;
+  uint64_t history_row_count;
+  uint64_t history_clear_count;
+
   row_pointer newrow( void )
   {
     const size_t w = ds.get_width();
@@ -512,10 +522,25 @@ public:
   void ring_bell( void ) { bell_count++; }
   unsigned int get_bell_count( void ) const { return bell_count; }
 
+  /* scrollback history */
+  void enable_history( size_t capacity, bool capture );
+  const std::shared_ptr<HistoryRing>& get_history( void ) const { return history; }
+  uint64_t get_history_line_count( void ) const { return history_line_count; }
+  uint64_t get_history_row_count( void ) const { return history_row_count; }
+  uint64_t get_history_clear_count( void ) const { return history_clear_count; }
+  void set_history_counters( uint64_t lines, uint64_t line_rows, uint64_t clears )
+  {
+    history_line_count = lines;
+    history_row_count = line_rows;
+    history_clear_count = clears;
+  }
+  void clear_history_scrollback( void ); /* CSI 3 J */
+
   bool operator==( const Framebuffer& x ) const
   {
     return ( rows == x.rows ) && ( window_title == x.window_title ) && ( clipboard == x.clipboard )
-           && ( bell_count == x.bell_count ) && ( ds == x.ds );
+           && ( bell_count == x.bell_count ) && ( ds == x.ds ) && ( history_line_count == x.history_line_count )
+           && ( history_row_count == x.history_row_count ) && ( history_clear_count == x.history_clear_count );
   }
 };
 }

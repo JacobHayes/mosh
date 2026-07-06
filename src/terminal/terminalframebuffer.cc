@@ -35,6 +35,7 @@
 #include <cstdlib>
 
 #include "src/terminal/terminalframebuffer.h"
+#include "src/terminal/terminalhistory.h"
 
 using namespace Terminal;
 
@@ -73,8 +74,8 @@ DrawState::DrawState( int s_width, int s_height )
 }
 
 Framebuffer::Framebuffer( int s_width, int s_height )
-  : rows(), icon_name(), window_title(), clipboard(), bell_count( 0 ), title_initialized( false ),
-    ds( s_width, s_height )
+  : rows(), icon_name(), window_title(), clipboard(), bell_count( 0 ), title_initialized( false ), history(),
+    history_line_count( 0 ), history_row_count( 0 ), history_clear_count( 0 ), ds( s_width, s_height )
 {
   assert( s_height > 0 );
   assert( s_width > 0 );
@@ -86,6 +87,8 @@ Framebuffer::Framebuffer( int s_width, int s_height )
 Framebuffer::Framebuffer( const Framebuffer& other )
   : rows( other.rows ), icon_name( other.icon_name ), window_title( other.window_title ),
     clipboard( other.clipboard ), bell_count( other.bell_count ), title_initialized( other.title_initialized ),
+    history( other.history ), history_line_count( other.history_line_count ),
+    history_row_count( other.history_row_count ), history_clear_count( other.history_clear_count ),
     ds( other.ds )
 {}
 
@@ -98,14 +101,45 @@ Framebuffer& Framebuffer::operator=( const Framebuffer& other )
     clipboard = other.clipboard;
     bell_count = other.bell_count;
     title_initialized = other.title_initialized;
+    history = other.history;
+    history_line_count = other.history_line_count;
+    history_row_count = other.history_row_count;
+    history_clear_count = other.history_clear_count;
     ds = other.ds;
   }
   return *this;
 }
 
+void Framebuffer::enable_history( size_t capacity, bool capture )
+{
+  if ( capacity > 0 ) {
+    history = std::make_shared<HistoryRing>( capacity, capture );
+  }
+}
+
+void Framebuffer::clear_history_scrollback( void )
+{
+  if ( history && history->capture_enabled() ) {
+    history->clear();
+    history_clear_count = history->get_clear_count();
+  }
+}
+
 void Framebuffer::scroll( int N )
 {
   if ( N >= 0 ) {
+    /* Rows falling off the top of a full-screen scroll are the
+       session transcript; save them.  Scrolls inside an app-defined
+       margin region don't reach scrollback (matches xterm). */
+    if ( history && history->capture_enabled() && N > 0 && ds.get_scrolling_region_top_row() == 0
+         && ds.get_scrolling_region_bottom_row() == ds.get_height() - 1 ) {
+      const int count = N < ds.get_height() ? N : ds.get_height();
+      for ( int i = 0; i < count; i++ ) {
+        history->append_row( *rows.at( i ), ds.get_width() );
+      }
+      history_line_count = history->get_next_seq();
+      history_row_count = history->get_next_row();
+    }
     delete_line( ds.get_scrolling_region_top_row(), N );
   } else {
     insert_line( ds.get_scrolling_region_top_row(), -N );
@@ -389,6 +423,11 @@ void Framebuffer::reset( void )
   window_title.clear();
   clipboard.clear();
   /* do not reset bell_count */
+  if ( history && history->capture_enabled() ) {
+    /* the continuation of a partial captured line will never arrive */
+    history->flush_pending();
+    history_line_count = history->get_next_seq();
+  }
 }
 
 void Framebuffer::soft_reset( void )
@@ -418,6 +457,11 @@ void Framebuffer::resize( int s_width, int s_height )
   }
   if ( oldwidth == s_width ) {
     return;
+  }
+  if ( history && history->capture_enabled() ) {
+    /* rows lose their wrap flags below; stitching can't continue across a width change */
+    history->flush_pending();
+    history_line_count = history->get_next_seq();
   }
   for ( rows_type::iterator i = rows.begin(); i != rows.end() && *i != blankrow; i++ ) {
     *i = std::make_shared<Row>( **i );
