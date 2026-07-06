@@ -119,6 +119,15 @@ std::string Display::new_frame( bool initialized, const Framebuffer& last, const
     frame.append( tmp );
   }
 
+  /* has the alternate screen changed?  Pass the switch through (the
+     receiving emulator or host terminal keeps its own hidden screen)
+     and repaint the newly active screen from scratch. */
+  if ( ( f.get_alt_screen_active() != frame.last_frame.get_alt_screen_active() )
+       || ( ( !initialized ) && f.get_alt_screen_active() ) ) {
+    frame.append( f.get_alt_screen_active() ? "\033[?1049h" : "\033[?1049l" );
+    initialized = false;
+  }
+
   /* has size changed? */
   if ( ( !initialized ) || ( f.ds.get_width() != frame.last_frame.ds.get_width() )
        || ( f.ds.get_height() != frame.last_frame.ds.get_height() ) ) {

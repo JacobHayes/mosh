@@ -81,6 +81,9 @@ public:
   void enable_history( size_t capacity, bool capture ) { terminal.get_mutable_fb().enable_history( capacity, capture ); }
   void set_history_subscribed( bool s ) { history_subscribed = s; }
   bool get_history_subscribed( void ) const { return history_subscribed; }
+
+  /* alternate screen (negotiated; both emulators must match) */
+  void set_altscreen_enabled( bool e ) { terminal.get_mutable_fb().set_altscreen_enabled( e ); }
   uint64_t get_echo_ack( void ) const { return echo_ack; }
   bool set_echo_ack( uint64_t now );
   void register_input_frame( uint64_t n, uint64_t now );

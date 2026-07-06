@@ -75,7 +75,8 @@ DrawState::DrawState( int s_width, int s_height )
 
 Framebuffer::Framebuffer( int s_width, int s_height )
   : rows(), icon_name(), window_title(), clipboard(), bell_count( 0 ), title_initialized( false ), history(),
-    history_line_count( 0 ), history_row_count( 0 ), history_clear_count( 0 ), ds( s_width, s_height )
+    history_line_count( 0 ), history_row_count( 0 ), history_clear_count( 0 ), saved_primary_rows(),
+    alt_screen_active( false ), altscreen_enabled( false ), ds( s_width, s_height )
 {
   assert( s_height > 0 );
   assert( s_width > 0 );
@@ -89,7 +90,8 @@ Framebuffer::Framebuffer( const Framebuffer& other )
     clipboard( other.clipboard ), bell_count( other.bell_count ), title_initialized( other.title_initialized ),
     history( other.history ), history_line_count( other.history_line_count ),
     history_row_count( other.history_row_count ), history_clear_count( other.history_clear_count ),
-    ds( other.ds )
+    saved_primary_rows( other.saved_primary_rows ), alt_screen_active( other.alt_screen_active ),
+    altscreen_enabled( other.altscreen_enabled ), ds( other.ds )
 {}
 
 Framebuffer& Framebuffer::operator=( const Framebuffer& other )
@@ -105,9 +107,40 @@ Framebuffer& Framebuffer::operator=( const Framebuffer& other )
     history_line_count = other.history_line_count;
     history_row_count = other.history_row_count;
     history_clear_count = other.history_clear_count;
+    saved_primary_rows = other.saved_primary_rows;
+    alt_screen_active = other.alt_screen_active;
+    altscreen_enabled = other.altscreen_enabled;
     ds = other.ds;
   }
   return *this;
+}
+
+void Framebuffer::switch_to_alternate_screen( bool save_cursor )
+{
+  if ( !altscreen_enabled || alt_screen_active ) {
+    return;
+  }
+  if ( save_cursor ) {
+    ds.save_cursor();
+  }
+  saved_primary_rows = rows;
+  /* xterm's 1049 presents a cleared alternate screen; we do the same
+     for 1047, whose clear merely happens on exit instead */
+  rows = rows_type( ds.get_height(), newrow() );
+  alt_screen_active = true;
+}
+
+void Framebuffer::switch_to_primary_screen( bool restore_cursor )
+{
+  if ( !alt_screen_active ) {
+    return;
+  }
+  rows = saved_primary_rows;
+  saved_primary_rows.clear();
+  alt_screen_active = false;
+  if ( restore_cursor ) {
+    ds.restore_cursor();
+  }
 }
 
 void Framebuffer::enable_history( size_t capacity, bool capture )
@@ -130,8 +163,10 @@ void Framebuffer::scroll( int N )
   if ( N >= 0 ) {
     /* Rows falling off the top of a full-screen scroll are the
        session transcript; save them.  Scrolls inside an app-defined
-       margin region don't reach scrollback (matches xterm). */
-    if ( history && history->capture_enabled() && N > 0 && ds.get_scrolling_region_top_row() == 0
+       margin region don't reach scrollback (matches xterm), and
+       neither does anything on the alternate screen. */
+    if ( history && history->capture_enabled() && !alt_screen_active && N > 0
+         && ds.get_scrolling_region_top_row() == 0
          && ds.get_scrolling_region_bottom_row() == ds.get_height() - 1 ) {
       const int count = N < ds.get_height() ? N : ds.get_height();
       for ( int i = 0; i < count; i++ ) {
@@ -420,6 +455,8 @@ void Framebuffer::reset( void )
   int width = ds.get_width(), height = ds.get_height();
   ds = DrawState( width, height );
   rows = rows_type( height, newrow() );
+  saved_primary_rows.clear();
+  alt_screen_active = false;
   window_title.clear();
   clipboard.clear();
   /* do not reset bell_count */
@@ -452,21 +489,31 @@ void Framebuffer::resize( int s_width, int s_height )
   ds.resize( s_width, s_height );
 
   row_pointer blankrow( newrow() );
-  if ( oldheight != s_height ) {
-    rows.resize( s_height, blankrow );
-  }
-  if ( oldwidth == s_width ) {
-    return;
-  }
-  if ( history && history->capture_enabled() ) {
+
+  if ( ( oldwidth != s_width ) && history && history->capture_enabled() ) {
     /* rows lose their wrap flags below; stitching can't continue across a width change */
     history->flush_pending();
     history_line_count = history->get_next_seq();
   }
-  for ( rows_type::iterator i = rows.begin(); i != rows.end() && *i != blankrow; i++ ) {
-    *i = std::make_shared<Row>( **i );
-    ( *i )->set_wrap( false );
-    ( *i )->cells.resize( s_width, Cell( ds.get_background_rendition() ) );
+
+  /* the hidden primary screen (if any) resizes along with the active one */
+  rows_type* screens[2] = { &rows, alt_screen_active ? &saved_primary_rows : NULL };
+  for ( int s = 0; s < 2; s++ ) {
+    if ( !screens[s] ) {
+      continue;
+    }
+    rows_type& screen = *screens[s];
+    if ( oldheight != s_height ) {
+      screen.resize( s_height, blankrow );
+    }
+    if ( oldwidth == s_width ) {
+      continue;
+    }
+    for ( rows_type::iterator i = screen.begin(); i != screen.end() && *i != blankrow; i++ ) {
+      *i = std::make_shared<Row>( **i );
+      ( *i )->set_wrap( false );
+      ( *i )->cells.resize( s_width, Cell( ds.get_background_rendition() ) );
+    }
   }
 }
 

@@ -277,14 +277,17 @@ void STMClient::main_init( void )
       scrollback_lines = strtoul( scrollback_env, NULL, 10 );
     }
     local_terminal.enable_history( scrollback_lines, false );
+    /* interpret the alternate-screen switches the server will emit */
+    local_terminal.set_altscreen_enabled( true );
   }
   network = NetworkPointer( new NetworkType( blank, local_terminal, key.c_str(), ip.c_str(), port.c_str() ) );
 
   network->set_send_delay( 1 ); /* minimal delay on outgoing keystrokes */
 
-  /* ask for scrollback history (ignored by stock servers) */
+  /* ask for scrollback history and alternate-screen emulation
+     (ignored by stock servers) */
   if ( scrollback_wanted ) {
-    network->get_current_state().push_back_feature( Network::FEATURE_SCROLLBACK );
+    network->get_current_state().push_back_feature( Network::FEATURE_SCROLLBACK | Network::FEATURE_ALTSCREEN );
   }
 
   /* tell server the size of the terminal */
@@ -329,6 +332,26 @@ std::string STMClient::update_scrollback( const Terminal::Framebuffer& fb )
   const std::shared_ptr<Terminal::HistoryRing>& ring = fb.get_history();
   if ( !ring ) {
     /* stock server, or no history received yet */
+    return std::string();
+  }
+
+  if ( fb.get_alt_screen_active() != last_alt_active ) {
+    last_alt_active = fb.get_alt_screen_active();
+    if ( !last_alt_active ) {
+      /* Back on the primary screen.  Rebuild: the full repaint after
+         1049l clears the restored screen, and some terminals (tmux,
+         iTerm2 with "save lines on clear") push the cleared rows into
+         their scrollback; the rebuild also covers a primary screen
+         that changed while it was hidden across a reconnect. */
+      scrollback_dirty = true;
+      last_scrollback_activity = timestamp();
+    }
+  }
+
+  if ( fb.get_alt_screen_active() ) {
+    /* The host terminal is on its own alternate screen (the differ
+       passes 1049 through); leave its scrollback alone.  Any pending
+       rebuild fires after the app returns to the primary screen. */
     return std::string();
   }
 

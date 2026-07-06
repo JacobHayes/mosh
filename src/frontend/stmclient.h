@@ -82,6 +82,7 @@ private:
   uint64_t emitted_clear_count;      /* server clear_count already honored */
   uint64_t last_seen_history_rows;   /* to notice rows still streaming in */
   uint64_t last_scrollback_activity; /* timestamp for replay debounce */
+  bool last_alt_active;              /* to notice alternate-screen exits */
 
   void main_init( void );
   void process_network_input( void );
@@ -116,7 +117,7 @@ public:
       repaint_requested( false ), lf_entered( false ), quit_sequence_started( false ), clean_shutdown( false ),
       verbose( s_verbose ), scrollback_wanted( true ), scrollback_active( false ), scrollback_dirty( false ),
       emitted_history_rows( 0 ), emitted_clear_count( 0 ), last_seen_history_rows( 0 ),
-      last_scrollback_activity( 0 )
+      last_scrollback_activity( 0 ), last_alt_active( false )
   {
     if ( getenv( "MOSH_NO_SCROLLBACK" ) ) {
       scrollback_wanted = false;

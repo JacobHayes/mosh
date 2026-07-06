@@ -430,6 +430,14 @@ private:
   uint64_t history_row_count;
   uint64_t history_clear_count;
 
+  /* Alternate screen (DECSET 1047/1048/1049).  altscreen_enabled is a
+     behavior switch (set only after the peer negotiates
+     FEATURE_ALTSCREEN -- both emulators must interpret diffs
+     identically), not synchronized state. */
+  rows_type saved_primary_rows;
+  bool alt_screen_active;
+  bool altscreen_enabled;
+
   row_pointer newrow( void )
   {
     const size_t w = ds.get_width();
@@ -536,11 +544,19 @@ public:
   }
   void clear_history_scrollback( void ); /* CSI 3 J */
 
+  /* alternate screen */
+  void set_altscreen_enabled( bool e ) { altscreen_enabled = e; }
+  bool get_altscreen_enabled( void ) const { return altscreen_enabled; }
+  bool get_alt_screen_active( void ) const { return alt_screen_active; }
+  void switch_to_alternate_screen( bool save_cursor );
+  void switch_to_primary_screen( bool restore_cursor );
+
   bool operator==( const Framebuffer& x ) const
   {
     return ( rows == x.rows ) && ( window_title == x.window_title ) && ( clipboard == x.clipboard )
            && ( bell_count == x.bell_count ) && ( ds == x.ds ) && ( history_line_count == x.history_line_count )
-           && ( history_row_count == x.history_row_count ) && ( history_clear_count == x.history_clear_count );
+           && ( history_row_count == x.history_row_count ) && ( history_clear_count == x.history_clear_count )
+           && ( alt_screen_active == x.alt_screen_active ) && ( saved_primary_rows == x.saved_primary_rows );
   }
 };
 }

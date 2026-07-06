@@ -332,6 +332,12 @@ static void CSI_DECSM( Framebuffer* fb, Dispatcher* dispatch )
       fb->ds.mouse_reporting_mode = (Terminal::DrawState::MouseReportingMode)param;
     } else if ( param == 1005 || param == 1006 || param == 1015 ) {
       fb->ds.mouse_encoding_mode = (Terminal::DrawState::MouseEncodingMode)param;
+    } else if ( param == 1047 || param == 1049 ) {
+      fb->switch_to_alternate_screen( param == 1049 );
+    } else if ( param == 1048 ) {
+      if ( fb->get_altscreen_enabled() ) {
+        fb->ds.save_cursor();
+      }
     } else {
       set_if_available( get_DEC_mode( param, fb ), true );
     }
@@ -347,6 +353,12 @@ static void CSI_DECRM( Framebuffer* fb, Dispatcher* dispatch )
       fb->ds.mouse_reporting_mode = Terminal::DrawState::MOUSE_REPORTING_NONE;
     } else if ( param == 1005 || param == 1006 || param == 1015 ) {
       fb->ds.mouse_encoding_mode = Terminal::DrawState::MOUSE_ENCODING_DEFAULT;
+    } else if ( param == 1047 || param == 1049 ) {
+      fb->switch_to_primary_screen( param == 1049 );
+    } else if ( param == 1048 ) {
+      if ( fb->get_altscreen_enabled() ) {
+        fb->ds.restore_cursor();
+      }
     } else {
       set_if_available( get_DEC_mode( param, fb ), false );
     }

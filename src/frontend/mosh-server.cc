@@ -785,6 +785,9 @@ static void serve( int host_fd,
               if ( us.get_event( i ).features & Network::FEATURE_SCROLLBACK ) {
                 terminal.set_history_subscribed( true );
               }
+              if ( us.get_event( i ).features & Network::FEATURE_ALTSCREEN ) {
+                terminal.set_altscreen_enabled( true );
+              }
               continue;
             }
             const Parser::Action& action = us.get_action( i );

@@ -1,6 +1,13 @@
 # Mosh scrollback design
 
-Status: in development on branch `scrollback`.
+Status: implemented on branch `scrollback` (phases 1-3: capture+sync,
+host-terminal rendering, alternate screen).
+
+Implementation note: some host terminals (tmux; iTerm2 with "save lines
+on clear") push cleared rows into their scrollback on `ESC[2J`.  The
+client therefore schedules a rebuild whenever the session returns from
+the alternate screen, since the post-1049l full repaint clears the
+restored primary screen.
 
 ## Goal
 
