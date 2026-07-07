@@ -91,10 +91,16 @@ string Complete::diff_from( const Complete& existing ) const
     }
   }
 
-  if ( history_subscribed ) {
+  if ( history_subscribed && get_fb().get_history() ) {
     const Framebuffer& my_fb = get_fb();
     const Framebuffer& ex_fb = existing.get_fb();
-    if ( ( my_fb.get_history_row_count() != ex_fb.get_history_row_count() )
+    /* A state predating the subscription gets a HistoryLines even
+       with unchanged counters: this is the acknowledgment that flips
+       the client into host-scrollback mode, so a client facing a
+       stock (or capture-disabled) server never leaves the alternate
+       screen. */
+    if ( ( !existing.get_history_subscribed() )
+         || ( my_fb.get_history_row_count() != ex_fb.get_history_row_count() )
          || ( my_fb.get_history_clear_count() != ex_fb.get_history_clear_count() )
          || ( my_fb.get_history_truncate_count() != ex_fb.get_history_truncate_count() ) ) {
       HistoryLines* hl = output.add_instruction()->MutableExtension( history );
@@ -153,7 +159,8 @@ void Complete::apply_string( const string& diff )
       Framebuffer& fb = terminal.get_mutable_fb();
       if ( !fb.get_history() ) {
         /* receiving side; capture stays off */
-        fb.enable_history( Terminal::HISTORY_DEFAULT_LINES, false );
+        fb.enable_history( history_receive_capacity ? history_receive_capacity : Terminal::HISTORY_DEFAULT_LINES,
+                           false );
       }
       const std::shared_ptr<Terminal::HistoryRing>& ring = fb.get_history();
       ring->receive_clear( hl.clear_count() );

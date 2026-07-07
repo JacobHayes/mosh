@@ -378,6 +378,8 @@ public:
   void save_cursor( void );
   void restore_cursor( void );
   void clear_saved_cursor( void ) { save = SavedCursor(); }
+  const SavedCursor& get_saved_cursor( void ) const { return save; }
+  void set_saved_cursor( const SavedCursor& s ) { save = s; }
 
   void resize( int s_width, int s_height );
 
@@ -435,8 +437,12 @@ private:
   /* Alternate screen (DECSET 1047/1048/1049).  altscreen_enabled is a
      behavior switch (set only after the peer negotiates
      FEATURE_ALTSCREEN -- both emulators must interpret diffs
-     identically), not synchronized state. */
+     identically), not synchronized state.  Each screen has its own
+     DECSC slot (as in xterm): the primary one is stashed here while
+     the alternate screen is active, so a full-screen app's own
+     DECSC/DECRC can't clobber the cursor saved by ?1049h. */
   rows_type saved_primary_rows;
+  SavedCursor primary_saved_cursor;
   bool alt_screen_active;
   bool altscreen_enabled;
 

@@ -60,15 +60,22 @@ private:
 
   /* Client announced FEATURE_SCROLLBACK; gates HistoryLines in diffs.
      Not part of state equality: flipping it alone changes nothing the
-     receiver has to be told about immediately. */
+     receiver has to be told about immediately.  (diff_from sends a
+     one-time empty HistoryLines as an acknowledgment, keyed off the
+     *existing* state's flag, so convergence doesn't depend on the
+     flag joining equality.) */
   bool history_subscribed;
+
+  /* Ring capacity to use when the receive side creates its ring on
+     the first HistoryLines; 0 means the built-in default. */
+  size_t history_receive_capacity;
 
   static const int ECHO_TIMEOUT = 50; /* for late ack */
 
 public:
   Complete( size_t width, size_t height )
     : parser(), terminal( width, height ), display( false ), actions(), input_history(), echo_ack( 0 ),
-      history_subscribed( false )
+      history_subscribed( false ), history_receive_capacity( 0 )
   {}
 
   std::string act( const std::string& str );
@@ -81,6 +88,7 @@ public:
   void enable_history( size_t capacity, bool capture ) { terminal.get_mutable_fb().enable_history( capacity, capture ); }
   void set_history_subscribed( bool s ) { history_subscribed = s; }
   bool get_history_subscribed( void ) const { return history_subscribed; }
+  void set_history_receive_capacity( size_t c ) { history_receive_capacity = c; }
 
   /* alternate screen (negotiated; both emulators must match) */
   void set_altscreen_enabled( bool e ) { terminal.get_mutable_fb().set_altscreen_enabled( e ); }

@@ -77,7 +77,7 @@ DrawState::DrawState( int s_width, int s_height )
 Framebuffer::Framebuffer( int s_width, int s_height )
   : rows(), icon_name(), window_title(), clipboard(), bell_count( 0 ), title_initialized( false ), history(),
     history_row_count( 0 ), history_clear_count( 0 ), history_truncate_count( 0 ), saved_primary_rows(),
-    alt_screen_active( false ), altscreen_enabled( false ), ds( s_width, s_height )
+    primary_saved_cursor(), alt_screen_active( false ), altscreen_enabled( false ), ds( s_width, s_height )
 {
   assert( s_height > 0 );
   assert( s_width > 0 );
@@ -91,8 +91,8 @@ Framebuffer::Framebuffer( const Framebuffer& other )
     clipboard( other.clipboard ), bell_count( other.bell_count ), title_initialized( other.title_initialized ),
     history( other.history ), history_row_count( other.history_row_count ),
     history_clear_count( other.history_clear_count ), history_truncate_count( other.history_truncate_count ),
-    saved_primary_rows( other.saved_primary_rows ), alt_screen_active( other.alt_screen_active ),
-    altscreen_enabled( other.altscreen_enabled ), ds( other.ds )
+    saved_primary_rows( other.saved_primary_rows ), primary_saved_cursor( other.primary_saved_cursor ),
+    alt_screen_active( other.alt_screen_active ), altscreen_enabled( other.altscreen_enabled ), ds( other.ds )
 {}
 
 Framebuffer& Framebuffer::operator=( const Framebuffer& other )
@@ -109,6 +109,7 @@ Framebuffer& Framebuffer::operator=( const Framebuffer& other )
     history_clear_count = other.history_clear_count;
     history_truncate_count = other.history_truncate_count;
     saved_primary_rows = other.saved_primary_rows;
+    primary_saved_cursor = other.primary_saved_cursor;
     alt_screen_active = other.alt_screen_active;
     altscreen_enabled = other.altscreen_enabled;
     ds = other.ds;
@@ -124,6 +125,9 @@ void Framebuffer::switch_to_alternate_screen( bool save_cursor )
   if ( save_cursor ) {
     ds.save_cursor();
   }
+  /* the alternate screen gets its own DECSC slot; stash the primary
+     one (including the ?1049h save just made) for the switch back */
+  primary_saved_cursor = ds.get_saved_cursor();
   saved_primary_rows = rows;
   /* xterm's 1049 presents a cleared alternate screen; we do the same
      for 1047, whose clear merely happens on exit instead */
@@ -139,6 +143,8 @@ void Framebuffer::switch_to_primary_screen( bool restore_cursor )
   rows = saved_primary_rows;
   saved_primary_rows.clear();
   alt_screen_active = false;
+  /* discard the alternate screen's DECSC slot */
+  ds.set_saved_cursor( primary_saved_cursor );
   if ( restore_cursor ) {
     ds.restore_cursor();
   }

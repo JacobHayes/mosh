@@ -270,13 +270,16 @@ void STMClient::main_init( void )
   Network::UserStream blank;
   Terminal::Complete local_terminal( window_size.ws_col, window_size.ws_row );
   if ( scrollback_wanted ) {
-    /* receive-only ring; all received Complete states share it */
+    /* The receive-side ring is created only when the server actually
+       sends history (its HistoryLines acknowledgment); a stock server
+       never does, and the client then stays on the alternate screen
+       exactly like stock mosh.  Only the eventual capacity is set here. */
     size_t scrollback_lines = Terminal::HISTORY_DEFAULT_LINES;
     const char* scrollback_env = getenv( "MOSH_SCROLLBACK_LINES" );
     if ( scrollback_env && *scrollback_env ) {
       scrollback_lines = strtoul( scrollback_env, NULL, 10 );
     }
-    local_terminal.enable_history( scrollback_lines, false );
+    local_terminal.set_history_receive_capacity( scrollback_lines );
     /* interpret the alternate-screen switches the server will emit */
     local_terminal.set_altscreen_enabled( true );
   }
@@ -307,11 +310,13 @@ void STMClient::output_new_frame( void )
   /* fetch target state */
   new_state = network->get_latest_remote_state().state.get_fb();
 
-  /* feed the host terminal's scrollback before drawing the frame */
+  /* feed the host terminal's scrollback before drawing the frame
+     (uses network_framebuffer from the *previous* frame) */
   std::string prefix;
   if ( scrollback_wanted ) {
     prefix = update_scrollback( new_state );
   }
+  network_framebuffer = new_state; /* pre-overlay snapshot for the next frame */
 
   /* apply local overlays */
   overlays.apply( new_state );
@@ -385,9 +390,22 @@ std::string STMClient::update_scrollback( const Terminal::Framebuffer& fb )
   if ( !scrollback_dirty && ( target_rows > emitted_history_rows ) ) {
     const int height = local_framebuffer.ds.get_height();
     const uint64_t r = target_rows - emitted_history_rows;
+    /* The rows about to enter permanent scrollback must be
+       authoritative: no notification banner or predictive echo may be
+       painted on them.  Overlays copy-on-write every row they touch,
+       so pointer equality with the pre-overlay snapshot proves the
+       row is clean. */
+    bool top_rows_clean = ( network_framebuffer.ds.get_height() == height )
+                          && ( network_framebuffer.ds.get_width() == local_framebuffer.ds.get_width() )
+                          && ( r <= (uint64_t)height );
+    for ( int i = 0; top_rows_clean && i < (int)r; i++ ) {
+      if ( local_framebuffer.get_row( i ) != network_framebuffer.get_row( i ) ) {
+        top_rows_clean = false;
+      }
+    }
     if ( ( emitted_history_rows == local_framebuffer.get_history_row_count() ) && ( r <= (uint64_t)height )
          && ( local_framebuffer.ds.get_width() == fb.ds.get_width() ) && ( height == fb.ds.get_height() )
-         && overlays.get_notification_engine().get_notification_string().empty() ) {
+         && top_rows_clean ) {
       /* Fast path: push the top r rows -- precisely the rows that
          scrolled off server-side -- into the host terminal's
          scrollback with real linefeeds, then hand the differ a
