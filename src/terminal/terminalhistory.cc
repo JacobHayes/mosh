@@ -87,15 +87,41 @@ std::string Terminal::render_row( const Row& row, int width, bool final_row )
   return out;
 }
 
+void HistoryRing::account_raw_added( const Entry& e )
+{
+  if ( e.raw ) {
+    raw_cells += e.raw->cells.size();
+  }
+}
+
+void HistoryRing::account_raw_removed( const Entry& e )
+{
+  if ( e.raw ) {
+    raw_cells -= e.raw->cells.size();
+  }
+}
+
+void HistoryRing::enforce_raw_budget( void )
+{
+  while ( raw_cells > RAW_CELL_BUDGET && raw_begin < entries.size() ) {
+    account_raw_removed( entries[raw_begin] );
+    entries[raw_begin].raw.reset();
+    raw_begin++;
+  }
+}
+
 void HistoryRing::append_row( const std::shared_ptr<Row>& row, int width )
 {
   const bool wrapped = row->get_wrap();
   entries.push_back( Entry { next_seq++, render_row( *row, width, !wrapped ), wrapped, row } );
-  if ( entries.size() > RAW_KEEP ) {
-    entries[entries.size() - 1 - RAW_KEEP].raw.reset();
-  }
+  account_raw_added( entries.back() );
+  enforce_raw_budget();
   while ( entries.size() > capacity ) {
+    account_raw_removed( entries.front() );
     entries.pop_front();
+    if ( raw_begin > 0 ) {
+      raw_begin--;
+    }
   }
 }
 
@@ -103,30 +129,28 @@ void HistoryRing::clear( void )
 {
   entries.clear();
   clear_count++;
+  raw_cells = 0;
+  raw_begin = 0;
 }
 
-std::vector<std::shared_ptr<Row>> HistoryRing::pull_last_line( int max_rows )
+std::vector<std::shared_ptr<Row>> HistoryRing::pull_last_rows( int max_rows )
 {
   std::vector<std::shared_ptr<Row>> out;
-  if ( entries.empty() ) {
-    return out;
-  }
-  /* back up to the first row of the trailing logical line */
-  size_t start = entries.size() - 1;
-  while ( start > 0 && entries[start - 1].wrapped ) {
+  size_t start = entries.size();
+  while ( start > 0 && (int)( entries.size() - start ) < max_rows && entries[start - 1].raw ) {
     start--;
   }
-  if ( entries.size() - start > (size_t)max_rows ) {
+  if ( start == entries.size() ) {
     return out;
   }
   for ( size_t i = start; i < entries.size(); i++ ) {
-    if ( !entries[i].raw ) {
-      /* rendered-only (too old to still hold cells); can't pull */
-      return std::vector<std::shared_ptr<Row>>();
-    }
+    account_raw_removed( entries[i] );
     out.push_back( entries[i].raw );
   }
   entries.erase( entries.begin() + start, entries.end() );
+  if ( raw_begin > entries.size() ) {
+    raw_begin = entries.size();
+  }
   truncate_count++;
   return out;
 }
@@ -166,6 +190,8 @@ void HistoryRing::begin_snapshot( uint64_t reset_seq, uint64_t s_truncate_count 
   next_seq = reset_seq;
   truncate_count = s_truncate_count;
   discontinuity = true;
+  raw_cells = 0;
+  raw_begin = 0;
 }
 
 HistoryRing::const_iterator HistoryRing::lower_bound( uint64_t seq ) const

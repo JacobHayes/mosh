@@ -626,7 +626,7 @@ void Framebuffer::reflow( int s_width, int s_height )
     if ( !was_full || (int)wrapped.size() >= s_height ) {
       break;
     }
-    std::vector<row_pointer> pulled = history->pull_last_line( 4 * s_height );
+    std::vector<row_pointer> pulled = history->pull_last_rows( s_height );
     if ( pulled.empty() ) {
       break;
     }

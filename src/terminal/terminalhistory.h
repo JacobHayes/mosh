@@ -81,14 +81,22 @@ private:
   uint64_t truncate_count; /* bumped when tail rows are pulled back by a resize */
   bool discontinuity;      /* receiver's copy no longer matches; needs a rebuild */
 
-  /* raw rows are only needed for resize pull-back; don't hold whole
-     screens of cells alive for the entire ring */
-  static const size_t RAW_KEEP = 1024;
+  /* Raw rows are only needed for resize pull-back, so retention is
+     bounded (by cells, not rows, so very narrow captures -- which
+     rewrap to many pullable rows -- keep enough reach).  The retained
+     raws always form the tail [raw_begin, size). */
+  static const size_t RAW_CELL_BUDGET = 262144;
+  size_t raw_cells;
+  size_t raw_begin;
+
+  void account_raw_added( const Entry& e );
+  void account_raw_removed( const Entry& e );
+  void enforce_raw_budget( void );
 
 public:
   HistoryRing( size_t s_capacity, bool s_capture )
     : entries(), capacity( s_capacity ), capture( s_capture ), next_seq( 0 ), clear_count( 0 ),
-      truncate_count( 0 ), discontinuity( false )
+      truncate_count( 0 ), discontinuity( false ), raw_cells( 0 ), raw_begin( 0 )
   {}
 
   bool capture_enabled( void ) const { return capture && capacity > 0; }
@@ -96,10 +104,12 @@ public:
   /* capture side */
   void append_row( const std::shared_ptr<Row>& row, int width );
   void clear( void ); /* CSI 3 J */
-  /* Remove the trailing logical line so a resize can put it back on
-     the screen.  Returns its raw rows oldest-first; empty if nothing
-     can be pulled.  Bumps truncate_count. */
-  std::vector<std::shared_ptr<Row>> pull_last_line( int max_rows );
+  /* Remove up to max_rows trailing rows so a resize can put them back
+     on the screen.  A pull may split a logical line: the remaining
+     ring tail then ends mid-line (wrapped), which the replay seam
+     already handles.  Returns raw rows oldest-first; empty if nothing
+     is pullable.  Bumps truncate_count. */
+  std::vector<std::shared_ptr<Row>> pull_last_rows( int max_rows );
 
   /* receive side */
   void receive_row( uint64_t seq, const std::string& rendered, bool wrapped );
