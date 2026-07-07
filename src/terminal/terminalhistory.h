@@ -35,81 +35,97 @@
 
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <string>
+#include <vector>
 
 namespace Terminal {
 class Row;
 
 static const size_t HISTORY_DEFAULT_LINES = 10000;
 
-/* Ring buffer of logical lines that have scrolled off the top of the
+/* Ring buffer of display rows that have scrolled off the top of the
    screen.  One ring is shared (via shared_ptr) among all the
    Framebuffer copies kept by the state-synchronization transport;
    per-state progress lives in plain counters inside each Framebuffer.
 
-   On the server the ring captures rows as they scroll off, stitching
-   soft-wrapped rows into logical lines so the client's host terminal
-   can reflow them natively.  On the client the ring only receives
-   lines the server sent (capture must stay off: the client emulator
-   replays screen *diffs*, whose scroll pattern differs from the
-   original output). */
+   Each entry is one display row, pre-rendered as a self-contained
+   ANSI string, plus its wrap flag: a wrapped row is a prefix of the
+   row that follows it, so the receiver can reconstruct logical lines
+   by concatenation (which is what lets the host terminal re-wrap
+   scrollback natively).  On the capture side the raw row is retained
+   for recent entries so a resize can pull rows back onto the screen.
+
+   The receive side only accepts rows the server sent (capture must
+   stay off: the client emulator replays screen *diffs*, whose scroll
+   pattern differs from the original output). */
 class HistoryRing
 {
 public:
-  struct Line
+  struct Entry
   {
     uint64_t seq;
     std::string rendered; /* self-contained ANSI string, no trailing newline */
+    bool wrapped;         /* continues on the following row */
+    std::shared_ptr<Row> raw; /* capture side, recent entries only; enables pull-back */
   };
 
-  typedef std::deque<Line>::const_iterator const_iterator;
+  typedef std::deque<Entry>::const_iterator const_iterator;
 
 private:
-  std::deque<Line> lines;
+  std::deque<Entry> entries;
   size_t capacity;
-  bool capture; /* server captures; client only receives */
-  uint64_t next_seq;
-  uint64_t next_row;    /* display rows ever absorbed (drives client fast path) */
-  uint64_t clear_count; /* bumped when the application clears scrollback */
-  std::string pending;  /* partial logical line awaiting its wrap continuation */
-  bool discontinuity;   /* receiver saw a gap in seq numbers */
+  bool capture;            /* server captures; client only receives */
+  uint64_t next_seq;       /* seq of the next captured row; never decreases */
+  uint64_t clear_count;    /* bumped when the application clears scrollback */
+  uint64_t truncate_count; /* bumped when tail rows are pulled back by a resize */
+  bool discontinuity;      /* receiver's copy no longer matches; needs a rebuild */
 
-  /* keep a pathological never-ending logical line from growing without bound */
-  static const size_t PENDING_CAP = 1048576;
-
-  void finalize( void );
+  /* raw rows are only needed for resize pull-back; don't hold whole
+     screens of cells alive for the entire ring */
+  static const size_t RAW_KEEP = 1024;
 
 public:
   HistoryRing( size_t s_capacity, bool s_capture )
-    : lines(), capacity( s_capacity ), capture( s_capture ), next_seq( 0 ), next_row( 0 ), clear_count( 0 ),
-      pending(), discontinuity( false )
+    : entries(), capacity( s_capacity ), capture( s_capture ), next_seq( 0 ), clear_count( 0 ),
+      truncate_count( 0 ), discontinuity( false )
   {}
 
   bool capture_enabled( void ) const { return capture && capacity > 0; }
 
-  /* sender side */
-  void append_row( const Row& row, int width );
-  void flush_pending( void ); /* resize or terminal reset interrupts stitching */
-  void clear( void );         /* CSI 3 J */
+  /* capture side */
+  void append_row( const std::shared_ptr<Row>& row, int width );
+  void clear( void ); /* CSI 3 J */
+  /* Remove the trailing logical line so a resize can put it back on
+     the screen.  Returns its raw rows oldest-first; empty if nothing
+     can be pulled.  Bumps truncate_count. */
+  std::vector<std::shared_ptr<Row>> pull_last_line( int max_rows );
 
-  /* receiver side */
-  void receive_line( uint64_t seq, const std::string& rendered );
+  /* receive side */
+  void receive_row( uint64_t seq, const std::string& rendered, bool wrapped );
   void receive_clear( uint64_t new_clear_count );
+  /* wholesale replacement follows (after a sender-side truncate) */
+  void begin_snapshot( uint64_t reset_seq, uint64_t s_truncate_count );
 
   uint64_t get_next_seq( void ) const { return next_seq; }
-  uint64_t get_next_row( void ) const { return next_row; }
   uint64_t get_clear_count( void ) const { return clear_count; }
-  uint64_t oldest_seq( void ) const { return lines.empty() ? next_seq : lines.front().seq; }
+  uint64_t get_truncate_count( void ) const { return truncate_count; }
+  uint64_t oldest_seq( void ) const { return entries.empty() ? next_seq : entries.front().seq; }
 
   bool has_discontinuity( void ) const { return discontinuity; }
   void set_discontinuity( void ) { discontinuity = true; }
   void clear_discontinuity( void ) { discontinuity = false; }
 
-  const_iterator begin( void ) const { return lines.begin(); }
-  const_iterator end( void ) const { return lines.end(); }
-  size_t size( void ) const { return lines.size(); }
+  const_iterator begin( void ) const { return entries.begin(); }
+  const_iterator end( void ) const { return entries.end(); }
+  size_t size( void ) const { return entries.size(); }
   const_iterator lower_bound( uint64_t seq ) const;
 };
+
+/* Number of leading cells that carry content: everything up to the
+   last cell that isn't a default-rendition blank.  (A wrapped row is
+   full-width by definition; callers pass its full extent instead.) */
+int render_extent( const Row& row, int width );
 
 /* Render a row as a self-contained ANSI string (SGR renditions and
    OSC 8 hyperlinks re-established from a default state, reset at the

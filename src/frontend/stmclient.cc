@@ -370,20 +370,22 @@ std::string STMClient::update_scrollback( const Terminal::Framebuffer& fb )
 
   const uint64_t target_rows = fb.get_history_row_count();
   const uint64_t clears = fb.get_history_clear_count();
+  const uint64_t truncates = fb.get_history_truncate_count();
 
   if ( target_rows != last_seen_history_rows ) {
     last_seen_history_rows = target_rows;
     last_scrollback_activity = now;
   }
 
-  if ( ( clears != emitted_clear_count ) || ring->has_discontinuity() ) {
+  if ( ( clears != emitted_clear_count ) || ( truncates != emitted_truncate_count )
+       || ring->has_discontinuity() ) {
     scrollback_dirty = true;
   }
 
   if ( !scrollback_dirty && ( target_rows > emitted_history_rows ) ) {
     const int height = local_framebuffer.ds.get_height();
     const uint64_t r = target_rows - emitted_history_rows;
-    if ( ( emitted_history_rows == local_framebuffer.get_history_row_count() ) && ( r < (uint64_t)height )
+    if ( ( emitted_history_rows == local_framebuffer.get_history_row_count() ) && ( r <= (uint64_t)height )
          && ( local_framebuffer.ds.get_width() == fb.ds.get_width() ) && ( height == fb.ds.get_height() )
          && overlays.get_notification_engine().get_notification_string().empty() ) {
       /* Fast path: push the top r rows -- precisely the rows that
@@ -415,6 +417,7 @@ std::string STMClient::update_scrollback( const Terminal::Framebuffer& fb )
     scrollback_dirty = false;
     ring->clear_discontinuity();
     emitted_clear_count = clears;
+    emitted_truncate_count = truncates;
     emitted_history_rows = target_rows;
   }
 
@@ -429,11 +432,20 @@ std::string STMClient::replay_scrollback( void )
   /* reset margins and renditions, hide cursor, wipe screen and host scrollback */
   out.append( "\033[r\033[0m\033[?25l\033[H\033[2J\033[3J" );
 
-  /* Print the transcript as logical lines and let the host terminal
-     wrap them: its scrollback gets native reflow-on-resize metadata. */
+  /* Print the transcript as logical lines -- wrapped rows concatenate
+     onto one line -- and let the host terminal wrap them: its
+     scrollback gets native reflow-on-resize metadata. */
   if ( ring ) {
+    bool open_line = false;
     for ( Terminal::HistoryRing::const_iterator it = ring->begin(); it != ring->end(); ++it ) {
       out.append( it->rendered );
+      open_line = it->wrapped;
+      if ( !open_line ) {
+        out.append( "\r\n" );
+      }
+    }
+    if ( open_line ) {
+      /* final row wraps into the live screen; close the seam */
       out.append( "\r\n" );
     }
   }

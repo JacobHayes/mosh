@@ -26,15 +26,18 @@ message EchoAck {
 }
 
 // Scrollback history synchronization.  Counters are totals as of the
-// sender's state; lines carry the logical lines the receiver is
-// missing (oldest first), pre-rendered as self-contained ANSI strings.
-// Stock receivers ignore this instruction.
+// sender's state; lines carry the display rows the receiver is
+// missing (oldest first), pre-rendered as self-contained ANSI
+// strings, with wrap flags so logical lines can be reconstructed by
+// concatenation.  Stock receivers ignore this instruction.
 message HistoryLines {
-  optional uint64 line_count = 1;   // logical lines ever finalized
-  optional uint64 row_count = 2;    // display rows ever scrolled off
-  optional uint64 clear_count = 3;  // scrollback-clear generation (CSI 3 J)
-  optional uint64 first_seq = 4;    // seq of lines[0]
-  repeated bytes lines = 5;
+  optional uint64 row_count = 2;      // display rows ever captured (never decreases)
+  optional uint64 clear_count = 3;    // scrollback-clear generation (CSI 3 J)
+  optional uint64 first_seq = 4;      // seq of lines[0]
+  repeated bytes lines = 5;           // one display row each
+  repeated bool wrapped = 6 [packed = true];
+  optional uint64 truncate_count = 7; // resize pull-back generation
+  optional bool snapshot = 8;         // lines replace the receiver's ring wholesale
 }
 
 extend Instruction {

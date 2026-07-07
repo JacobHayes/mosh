@@ -37,22 +37,27 @@
 
 using namespace Terminal;
 
+int Terminal::render_extent( const Row& row, int width )
+{
+  const Renditions default_renditions( 0 );
+  int end = std::min( (int)row.cells.size(), width );
+  while ( end > 0 ) {
+    const Cell& cell = row.cells.at( end - 1 );
+    if ( cell.empty() && cell.get_renditions() == default_renditions && !cell.get_hyperlink() ) {
+      end--;
+    } else {
+      break;
+    }
+  }
+  return end;
+}
+
 std::string Terminal::render_row( const Row& row, int width, bool final_row )
 {
   const Renditions default_renditions( 0 );
   const Hyperlink no_hyperlink;
 
-  int end = std::min( (int)row.cells.size(), width );
-  if ( final_row ) {
-    while ( end > 0 ) {
-      const Cell& cell = row.cells.at( end - 1 );
-      if ( cell.empty() && cell.get_renditions() == default_renditions && !cell.get_hyperlink() ) {
-        end--;
-      } else {
-        break;
-      }
-    }
-  }
+  const int end = final_row ? render_extent( row, width ) : std::min( (int)row.cells.size(), width );
 
   std::string out;
   Renditions current = default_renditions;
@@ -82,41 +87,51 @@ std::string Terminal::render_row( const Row& row, int width, bool final_row )
   return out;
 }
 
-void HistoryRing::append_row( const Row& row, int width )
+void HistoryRing::append_row( const std::shared_ptr<Row>& row, int width )
 {
-  const bool wrapped = row.get_wrap();
-  pending.append( render_row( row, width, !wrapped ) );
-  next_row++;
-  if ( wrapped && pending.size() < PENDING_CAP ) {
-    return;
+  const bool wrapped = row->get_wrap();
+  entries.push_back( Entry { next_seq++, render_row( *row, width, !wrapped ), wrapped, row } );
+  if ( entries.size() > RAW_KEEP ) {
+    entries[entries.size() - 1 - RAW_KEEP].raw.reset();
   }
-  finalize();
-}
-
-void HistoryRing::finalize( void )
-{
-  lines.push_back( Line { next_seq++, std::move( pending ) } );
-  pending.clear();
-  while ( lines.size() > capacity ) {
-    lines.pop_front();
-  }
-}
-
-void HistoryRing::flush_pending( void )
-{
-  if ( !pending.empty() ) {
-    finalize();
+  while ( entries.size() > capacity ) {
+    entries.pop_front();
   }
 }
 
 void HistoryRing::clear( void )
 {
-  lines.clear();
-  pending.clear();
+  entries.clear();
   clear_count++;
 }
 
-void HistoryRing::receive_line( uint64_t seq, const std::string& rendered )
+std::vector<std::shared_ptr<Row>> HistoryRing::pull_last_line( int max_rows )
+{
+  std::vector<std::shared_ptr<Row>> out;
+  if ( entries.empty() ) {
+    return out;
+  }
+  /* back up to the first row of the trailing logical line */
+  size_t start = entries.size() - 1;
+  while ( start > 0 && entries[start - 1].wrapped ) {
+    start--;
+  }
+  if ( entries.size() - start > (size_t)max_rows ) {
+    return out;
+  }
+  for ( size_t i = start; i < entries.size(); i++ ) {
+    if ( !entries[i].raw ) {
+      /* rendered-only (too old to still hold cells); can't pull */
+      return std::vector<std::shared_ptr<Row>>();
+    }
+    out.push_back( entries[i].raw );
+  }
+  entries.erase( entries.begin() + start, entries.end() );
+  truncate_count++;
+  return out;
+}
+
+void HistoryRing::receive_row( uint64_t seq, const std::string& rendered, bool wrapped )
 {
   if ( seq < next_seq ) {
     /* duplicate from an overlapping diff */
@@ -126,11 +141,11 @@ void HistoryRing::receive_line( uint64_t seq, const std::string& rendered )
     /* disconnect outlasted the sender's ring; host scrollback needs a rebuild */
     discontinuity = true;
   }
-  lines.push_back( Line { seq, rendered } );
+  entries.push_back( Entry { seq, rendered, wrapped, std::shared_ptr<Row>() } );
   next_seq = seq + 1;
   if ( capacity ) {
-    while ( lines.size() > capacity ) {
-      lines.pop_front();
+    while ( entries.size() > capacity ) {
+      entries.pop_front();
     }
   }
 }
@@ -141,12 +156,20 @@ void HistoryRing::receive_clear( uint64_t new_clear_count )
     return;
   }
   clear_count = new_clear_count;
-  lines.clear();
+  entries.clear();
   discontinuity = true; /* force a replay so the host scrollback is wiped too */
+}
+
+void HistoryRing::begin_snapshot( uint64_t reset_seq, uint64_t s_truncate_count )
+{
+  entries.clear();
+  next_seq = reset_seq;
+  truncate_count = s_truncate_count;
+  discontinuity = true;
 }
 
 HistoryRing::const_iterator HistoryRing::lower_bound( uint64_t seq ) const
 {
   return std::lower_bound(
-    lines.begin(), lines.end(), seq, []( const Line& l, uint64_t v ) { return l.seq < v; } );
+    entries.begin(), entries.end(), seq, []( const Entry& e, uint64_t v ) { return e.seq < v; } );
 }

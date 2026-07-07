@@ -94,25 +94,31 @@ string Complete::diff_from( const Complete& existing ) const
   if ( history_subscribed ) {
     const Framebuffer& my_fb = get_fb();
     const Framebuffer& ex_fb = existing.get_fb();
-    if ( ( my_fb.get_history_line_count() != ex_fb.get_history_line_count() )
-         || ( my_fb.get_history_row_count() != ex_fb.get_history_row_count() )
-         || ( my_fb.get_history_clear_count() != ex_fb.get_history_clear_count() ) ) {
+    if ( ( my_fb.get_history_row_count() != ex_fb.get_history_row_count() )
+         || ( my_fb.get_history_clear_count() != ex_fb.get_history_clear_count() )
+         || ( my_fb.get_history_truncate_count() != ex_fb.get_history_truncate_count() ) ) {
       HistoryLines* hl = output.add_instruction()->MutableExtension( history );
-      hl->set_line_count( my_fb.get_history_line_count() );
       hl->set_row_count( my_fb.get_history_row_count() );
       hl->set_clear_count( my_fb.get_history_clear_count() );
+      hl->set_truncate_count( my_fb.get_history_truncate_count() );
       const std::shared_ptr<Terminal::HistoryRing>& ring = my_fb.get_history();
       if ( ring ) {
+        /* After a pull-back the receiver's tail no longer matches;
+           replace its ring wholesale instead of appending. */
+        const bool snapshot = ( my_fb.get_history_truncate_count() != ex_fb.get_history_truncate_count() );
+        hl->set_snapshot( snapshot );
         /* The shared ring may have grown past this state's snapshot;
-           send only lines the receiver lacks *and* this state had. */
-        Terminal::HistoryRing::const_iterator it = ring->lower_bound( ex_fb.get_history_line_count() );
+           send only rows the receiver lacks *and* this state had. */
+        Terminal::HistoryRing::const_iterator it
+          = snapshot ? ring->begin() : ring->lower_bound( ex_fb.get_history_row_count() );
         bool first = true;
-        for ( ; it != ring->end() && it->seq < my_fb.get_history_line_count(); ++it ) {
+        for ( ; it != ring->end() && it->seq < my_fb.get_history_row_count(); ++it ) {
           if ( first ) {
             hl->set_first_seq( it->seq );
             first = false;
           }
           hl->add_lines( it->rendered );
+          hl->add_wrapped( it->wrapped );
         }
       }
     }
@@ -151,14 +157,17 @@ void Complete::apply_string( const string& diff )
       }
       const std::shared_ptr<Terminal::HistoryRing>& ring = fb.get_history();
       ring->receive_clear( hl.clear_count() );
+      if ( hl.snapshot() && ( hl.truncate_count() > ring->get_truncate_count() ) ) {
+        ring->begin_snapshot( hl.lines_size() ? hl.first_seq() : hl.row_count(), hl.truncate_count() );
+      }
       uint64_t seq = hl.first_seq();
       for ( int j = 0; j < hl.lines_size(); j++ ) {
-        ring->receive_line( seq++, hl.lines( j ) );
+        ring->receive_row( seq++, hl.lines( j ), ( j < hl.wrapped_size() ) ? hl.wrapped( j ) : false );
       }
-      if ( hl.line_count() > ring->get_next_seq() ) {
+      if ( hl.row_count() > ring->get_next_seq() ) {
         ring->set_discontinuity();
       }
-      fb.set_history_counters( hl.line_count(), hl.row_count(), hl.clear_count() );
+      fb.set_history_counters( hl.row_count(), hl.clear_count(), hl.truncate_count() );
     }
   }
 }

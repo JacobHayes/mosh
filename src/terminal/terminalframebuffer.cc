@@ -30,6 +30,7 @@
     also delete it here.
 */
 
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -75,7 +76,7 @@ DrawState::DrawState( int s_width, int s_height )
 
 Framebuffer::Framebuffer( int s_width, int s_height )
   : rows(), icon_name(), window_title(), clipboard(), bell_count( 0 ), title_initialized( false ), history(),
-    history_line_count( 0 ), history_row_count( 0 ), history_clear_count( 0 ), saved_primary_rows(),
+    history_row_count( 0 ), history_clear_count( 0 ), history_truncate_count( 0 ), saved_primary_rows(),
     alt_screen_active( false ), altscreen_enabled( false ), ds( s_width, s_height )
 {
   assert( s_height > 0 );
@@ -88,8 +89,8 @@ Framebuffer::Framebuffer( int s_width, int s_height )
 Framebuffer::Framebuffer( const Framebuffer& other )
   : rows( other.rows ), icon_name( other.icon_name ), window_title( other.window_title ),
     clipboard( other.clipboard ), bell_count( other.bell_count ), title_initialized( other.title_initialized ),
-    history( other.history ), history_line_count( other.history_line_count ),
-    history_row_count( other.history_row_count ), history_clear_count( other.history_clear_count ),
+    history( other.history ), history_row_count( other.history_row_count ),
+    history_clear_count( other.history_clear_count ), history_truncate_count( other.history_truncate_count ),
     saved_primary_rows( other.saved_primary_rows ), alt_screen_active( other.alt_screen_active ),
     altscreen_enabled( other.altscreen_enabled ), ds( other.ds )
 {}
@@ -104,9 +105,9 @@ Framebuffer& Framebuffer::operator=( const Framebuffer& other )
     bell_count = other.bell_count;
     title_initialized = other.title_initialized;
     history = other.history;
-    history_line_count = other.history_line_count;
     history_row_count = other.history_row_count;
     history_clear_count = other.history_clear_count;
+    history_truncate_count = other.history_truncate_count;
     saved_primary_rows = other.saved_primary_rows;
     alt_screen_active = other.alt_screen_active;
     altscreen_enabled = other.altscreen_enabled;
@@ -158,6 +159,24 @@ void Framebuffer::clear_history_scrollback( void )
   }
 }
 
+void Framebuffer::capture_screen_to_history( void )
+{
+  if ( !history || !history->capture_enabled() || alt_screen_active ) {
+    return;
+  }
+  int used = 0;
+  for ( int i = ds.get_height() - 1; i >= 0; i-- ) {
+    if ( render_extent( *rows.at( i ), ds.get_width() ) > 0 ) {
+      used = i + 1;
+      break;
+    }
+  }
+  for ( int i = 0; i < used; i++ ) {
+    history->append_row( rows.at( i ), ds.get_width() );
+  }
+  history_row_count = history->get_next_seq();
+}
+
 void Framebuffer::scroll( int N )
 {
   if ( N >= 0 ) {
@@ -170,10 +189,9 @@ void Framebuffer::scroll( int N )
          && ds.get_scrolling_region_bottom_row() == ds.get_height() - 1 ) {
       const int count = N < ds.get_height() ? N : ds.get_height();
       for ( int i = 0; i < count; i++ ) {
-        history->append_row( *rows.at( i ), ds.get_width() );
+        history->append_row( rows.at( i ), ds.get_width() );
       }
-      history_line_count = history->get_next_seq();
-      history_row_count = history->get_next_row();
+      history_row_count = history->get_next_seq();
     }
     delete_line( ds.get_scrolling_region_top_row(), N );
   } else {
@@ -460,11 +478,6 @@ void Framebuffer::reset( void )
   window_title.clear();
   clipboard.clear();
   /* do not reset bell_count */
-  if ( history && history->capture_enabled() ) {
-    /* the continuation of a partial captured line will never arrive */
-    history->flush_pending();
-    history_line_count = history->get_next_seq();
-  }
 }
 
 void Framebuffer::soft_reset( void )
@@ -486,15 +499,23 @@ void Framebuffer::resize( int s_width, int s_height )
 
   int oldheight = ds.get_height();
   int oldwidth = ds.get_width();
+  if ( ( oldheight == s_height ) && ( oldwidth == s_width ) ) {
+    return;
+  }
+
+  /* Native-style reflow when we keep scrollback and are on the
+     primary screen.  Receivers of synced state never take this path
+     (their ring doesn't capture); they don't need to reflow, because
+     any resize triggers a full repaint in the diff, so the sender's
+     result overwrites whatever the legacy path produces. */
+  if ( history && history->capture_enabled() && !alt_screen_active ) {
+    reflow( s_width, s_height );
+    return;
+  }
+
   ds.resize( s_width, s_height );
 
   row_pointer blankrow( newrow() );
-
-  if ( ( oldwidth != s_width ) && history && history->capture_enabled() ) {
-    /* rows lose their wrap flags below; stitching can't continue across a width change */
-    history->flush_pending();
-    history_line_count = history->get_next_seq();
-  }
 
   /* the hidden primary screen (if any) resizes along with the active one */
   rows_type* screens[2] = { &rows, alt_screen_active ? &saved_primary_rows : NULL };
@@ -515,6 +536,131 @@ void Framebuffer::resize( int s_width, int s_height )
       ( *i )->cells.resize( s_width, Cell( ds.get_background_rendition() ) );
     }
   }
+}
+
+/* Re-wrap a sequence of rows (each at its own original width, linked
+   by wrap flags) to a new width, translating a cursor position given
+   in `work` coordinates. */
+static void rewrap_rows( const std::deque<Framebuffer::row_pointer>& work,
+                         int cursor_work_row,
+                         int cursor_work_col,
+                         int width,
+                         color_type bg,
+                         std::vector<Framebuffer::row_pointer>& out,
+                         int* cursor_row,
+                         int* cursor_col )
+{
+  out.clear();
+  *cursor_row = 0;
+  *cursor_col = 0;
+
+  std::shared_ptr<Row> cur = std::make_shared<Row>( width, bg );
+  int col = 0;
+
+  auto close_row = [&]( bool wrap ) {
+    cur->set_wrap( wrap );
+    out.push_back( cur );
+    cur = std::make_shared<Row>( width, bg );
+    col = 0;
+  };
+
+  for ( size_t r = 0; r < work.size(); r++ ) {
+    const Row& src = *work[r];
+    const bool src_wrap = src.get_wrap();
+    /* a wrapped row is full by definition; a final row sheds its blank tail */
+    const int extent = src_wrap ? (int)src.cells.size() : render_extent( src, src.cells.size() );
+    for ( int c = 0; c < extent; c++ ) {
+      const Cell& cell = src.cells[c];
+      if ( col >= width ) {
+        close_row( true );
+      }
+      if ( cell.get_wide() && ( col == width - 1 ) ) {
+        /* a wide character can't straddle the margin */
+        close_row( true );
+      }
+      if ( ( (int)r == cursor_work_row ) && ( c == cursor_work_col ) ) {
+        *cursor_row = (int)out.size();
+        *cursor_col = col;
+      }
+      cur->cells.at( col ) = cell;
+      col++;
+    }
+    if ( ( (int)r == cursor_work_row ) && ( cursor_work_col >= extent ) ) {
+      /* cursor on the blank tail of the row */
+      *cursor_row = (int)out.size();
+      *cursor_col = std::min( col + ( cursor_work_col - extent ), width - 1 );
+    }
+    if ( !src_wrap || ( r == work.size() - 1 ) ) {
+      close_row( src_wrap );
+    }
+  }
+}
+
+void Framebuffer::reflow( int s_width, int s_height )
+{
+  const int oldheight = ds.get_height();
+  const int oldwidth = ds.get_width();
+
+  /* everything above the cursor, plus any content below it */
+  int used = ds.get_cursor_row() + 1;
+  for ( int i = oldheight - 1; i >= used; i-- ) {
+    if ( render_extent( *rows.at( i ), oldwidth ) > 0 ) {
+      used = i + 1;
+      break;
+    }
+  }
+  /* A full screen stays anchored to the bottom, pulling scrollback
+     back into view as the window grows; a partially used screen --
+     fresh session, or freshly cleared -- stays anchored to the top. */
+  const bool was_full = ( used == oldheight );
+
+  std::deque<row_pointer> work( rows.begin(), rows.begin() + used );
+  int cursor_work_row = ds.get_cursor_row();
+  const int cursor_work_col = ds.get_cursor_col();
+  const color_type bg = ds.get_background_rendition();
+
+  std::vector<row_pointer> wrapped;
+  int new_row = 0, new_col = 0;
+  for ( ;; ) {
+    rewrap_rows( work, cursor_work_row, cursor_work_col, s_width, bg, wrapped, &new_row, &new_col );
+    if ( !was_full || (int)wrapped.size() >= s_height ) {
+      break;
+    }
+    std::vector<row_pointer> pulled = history->pull_last_line( 4 * s_height );
+    if ( pulled.empty() ) {
+      break;
+    }
+    work.insert( work.begin(), pulled.begin(), pulled.end() );
+    cursor_work_row += (int)pulled.size();
+  }
+
+  /* bottom-anchor: rows that no longer fit scroll off the top into history */
+  int overflow = (int)wrapped.size() - s_height;
+  if ( overflow > 0 ) {
+    if ( overflow > new_row ) {
+      overflow = new_row; /* never push the cursor off the screen */
+    }
+    for ( int i = 0; i < overflow; i++ ) {
+      history->append_row( wrapped.at( i ), s_width );
+    }
+    wrapped.erase( wrapped.begin(), wrapped.begin() + overflow );
+    new_row -= overflow;
+  }
+  if ( (int)wrapped.size() > s_height ) {
+    /* content below the cursor still doesn't fit; drop it */
+    wrapped.resize( s_height );
+  }
+
+  ds.resize( s_width, s_height );
+  rows.assign( wrapped.begin(), wrapped.end() );
+  while ( (int)rows.size() < s_height ) {
+    rows.push_back( newrow() );
+  }
+  ds.move_row( std::min( new_row, s_height - 1 ), false );
+  ds.move_col( std::min( new_col, s_width - 1 ), false, false );
+
+  history_row_count = history->get_next_seq();
+  history_truncate_count = history->get_truncate_count();
 }
 
 void DrawState::resize( int s_width, int s_height )

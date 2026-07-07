@@ -9,6 +9,25 @@ client therefore schedules a rebuild whenever the session returns from
 the alternate screen, since the post-1049l full repaint clears the
 restored primary screen.
 
+Revisions after live Ghostty testing:
+
+- The ring is **row-granular**: each entry is one rendered display row
+  plus its wrap flag (logical lines are reconstructed by concatenation
+  at replay time).  This removed the pending-line buffer and made
+  scrollback rewrap correctly in both resize directions.
+- `ESC[2J` captures the used screen rows into history before wiping,
+  so Ctrl-L behaves like a native save-on-clear terminal.
+- **Viewport reflow**: on the capture side (server), `resize` rewraps
+  the primary screen's logical lines at the new size.  A full screen
+  is bottom-anchored: on height growth, whole logical lines are pulled
+  back from the ring (recent entries retain their raw cells for this);
+  on shrink or narrowing, overflow rows at the top are captured into
+  the ring instead of being cropped.  A partially used screen stays
+  top-anchored.  Pull-backs bump a `truncate_count`; the next diff
+  sends a full-ring **snapshot** that replaces the receiver's copy.
+  Receivers never reflow -- any resize triggers a full repaint in the
+  diff, so the sender's result overwrites the legacy crop/pad path.
+
 ## Goal
 
 Native-feeling scrollback for mosh sessions: output that scrolls off the top of

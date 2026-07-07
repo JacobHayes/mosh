@@ -90,6 +90,9 @@ static void CSI_ED( Framebuffer* fb, Dispatcher* dispatch )
       clearline( fb, -1, 0, fb->ds.get_cursor_col() );
       break;
     case 2: /* entire screen */
+      /* Ghostty/iTerm2-style: the erased contents move into
+         scrollback (this is what makes Ctrl-L feel native) */
+      fb->capture_screen_to_history();
       for ( int y = 0; y < fb->ds.get_height(); y++ ) {
         fb->reset_row( fb->get_mutable_row( y ) );
       }
