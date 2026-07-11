@@ -13,10 +13,9 @@ jobs:
         include:
           - crypto: nettle
             os: ubuntu-22.04
-        
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v7
 
     - name: "setup linux build environment"
       if: ${{ startsWith(matrix.os, 'ubuntu') }}

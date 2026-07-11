@@ -1,0 +1,363 @@
+name: Continuous prerelease
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: continuous-prerelease-main
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    runs-on: ubuntu-24.04
+    outputs:
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+      deb_version: ${{ steps.metadata.outputs.deb_version }}
+      short_sha: ${{ steps.metadata.outputs.short_sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: metadata
+        name: Derive immutable release metadata
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]] || {
+            printf 'continuous prereleases may only run for main, not %s\n' "$GITHUB_REF" >&2
+            exit 1
+          }
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          commit_epoch=$(git show -s --format=%ct "$GITHUB_SHA")
+          read -r tag_stamp version_date version_time < <(
+            python3 - "$commit_epoch" <<'PY'
+          import datetime
+          import sys
+          stamp = datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc)
+          print(stamp.strftime("%Y%m%dT%H%M%SZ %Y%m%d %H%M%S"))
+          PY
+          )
+          short_sha=${GITHUB_SHA:0:7}
+          base_version=$(sed -n 's/^AC_INIT(\[mosh\], \[\([^]]*\)\].*/\1/p' configure.ac)
+          [[ "$base_version" =~ ^[0-9]+(\.[0-9]+)*$ ]]
+          {
+            echo "release_tag=build-${tag_stamp}-${short_sha}"
+            echo "deb_version=${base_version}+git${version_date}.${version_time}.${short_sha}-1"
+            echo "short_sha=${short_sha}"
+          } >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake build-essential libprotobuf-dev libssl-dev libutempter-dev pkg-config protobuf-compiler tmux
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        run: brew install automake protobuf tmux
+      - name: Build and test
+        run: |
+          set -Eeuo pipefail
+          ./autogen.sh
+          ./configure --enable-compile-warnings=error --enable-examples
+          make -j2 V=1
+          make -j2 V=1 check
+
+  source-dist:
+    needs: metadata
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake build-essential libprotobuf-dev libssl-dev libutempter-dev pkg-config protobuf-compiler tmux
+      - name: Run distcheck and select the sole source archive
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ./autogen.sh
+          ./configure --enable-compile-warnings=error --enable-examples
+          make -j2 V=1 distcheck
+          mapfile -t archives < <(find . -maxdepth 1 -type f -name 'mosh-*.tar.gz' -print)
+          [[ ${#archives[@]} -eq 1 ]] || { printf 'expected one source archive, found %s\n' "${#archives[@]}" >&2; exit 1; }
+          mkdir release
+          archive_name=${archives[0]#./}
+          archive_root=${archive_name%.tar.gz}
+          cp -- "${archives[0]}" release/
+          tar -tzf "release/$archive_name" | grep -Fx "$archive_root/scripts/install-prerelease.sh"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: source-dist
+          path: release/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  deb:
+    needs: metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: amd64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    env:
+      DEB_VERSION: ${{ needs.metadata.outputs.deb_version }}
+      DEB_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install package build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bash-completion build-essential debhelper devscripts libncurses-dev libprotobuf-dev libssl-dev libutempter-dev locales pkg-config protobuf-compiler tmux
+      - name: Build and validate statically linked prerelease package
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "$(dpkg --print-architecture)" == "$DEB_ARCH" ]]
+          export DEBEMAIL='mosh-release@users.noreply.github.com'
+          export DEBFULLNAME='Mosh continuous prerelease'
+          dch --newversion "$DEB_VERSION" --distribution jammy 'Automated continuous prerelease.'
+          MOSH_STATIC_PRERELEASE=1 dpkg-buildpackage --build=binary --no-sign
+          package="../mosh_${DEB_VERSION}_${DEB_ARCH}.deb"
+          [[ -f "$package" ]]
+          [[ "$(dpkg-deb --field "$package" Package)" == mosh ]]
+          [[ "$(dpkg-deb --field "$package" Version)" == "$DEB_VERSION" ]]
+          [[ "$(dpkg-deb --field "$package" Architecture)" == "$DEB_ARCH" ]]
+          depends=$(dpkg-deb --field "$package" Depends)
+          if grep -Eiq 'lib(protobuf|ssl|crypto|tinfo|ncurses|stdc\+\+|gcc-s|utempter)|zlib|libz' <<<"$depends"; then
+            printf 'unexpected cross-LTS C++ dependency: %s\n' "$depends" >&2
+            exit 1
+          fi
+          mkdir release
+          cp -- "$package" release/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deb-${{ matrix.arch }}
+          path: release/*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+  package-smoke:
+    needs: [metadata, deb]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: amd64
+          - os: ubuntu-24.04
+            arch: amd64
+          - os: ubuntu-26.04
+            arch: amd64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+          - os: ubuntu-26.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    env:
+      DEB_VERSION: ${{ needs.metadata.outputs.deb_version }}
+      DEB_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: deb-${{ matrix.arch }}
+          path: package
+      - name: Install and smoke-test package
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          package="package/mosh_${DEB_VERSION}_${DEB_ARCH}.deb"
+          [[ "$(dpkg --print-architecture)" == "$DEB_ARCH" ]]
+          [[ "$(dpkg-deb --field "$package" Package)" == mosh ]]
+          [[ "$(dpkg-deb --field "$package" Version)" == "$DEB_VERSION" ]]
+          [[ "$(dpkg-deb --field "$package" Architecture)" == "$DEB_ARCH" ]]
+          sudo apt-get update
+          sudo apt-get install -y "$package"
+          test "$(TERM=xterm-256color mosh-client -c)" -ge 8
+          for binary in /usr/bin/mosh-client /usr/bin/mosh-server; do
+            ldd "$binary" | tee /dev/stderr | (! grep -Eiq 'protobuf|libssl|libcrypto|libz|tinfo|ncurses|libstdc\+\+|libgcc_s|utempter')
+          done
+
+  installer-static:
+    needs: metadata
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Syntax and static installer tests
+        run: scripts/tests/install-prerelease-static.sh
+      - name: ShellCheck installer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          shellcheck scripts/install-prerelease.sh scripts/tests/install-prerelease-static.sh
+
+  publish:
+    if: github.ref == 'refs/heads/main'
+    needs: [metadata, test, source-dist, package-smoke, installer-static]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.metadata.outputs.release_tag }}
+      DEB_VERSION: ${{ needs.metadata.outputs.deb_version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: release
+          merge-multiple: true
+      - name: Validate final distributables and create checksums
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mapfile -t files < <(find release -maxdepth 1 -type f -print | sort)
+          [[ ${#files[@]} -eq 3 ]] || { printf 'expected three build outputs, found %s\n' "${#files[@]}" >&2; exit 1; }
+          [[ -f "release/mosh_${DEB_VERSION}_amd64.deb" ]]
+          [[ -f "release/mosh_${DEB_VERSION}_arm64.deb" ]]
+          mapfile -t sources < <(find release -maxdepth 1 -type f -name 'mosh-*.tar.gz' -print)
+          [[ ${#sources[@]} -eq 1 ]]
+          (cd release && sha256sum -- * > SHA256SUMS)
+          (cd release && sha256sum -c SHA256SUMS)
+      - name: Attest final distributables
+        uses: actions/attest@v4
+        with:
+          subject-path: release/*
+      - name: Publish or repair immutable prerelease
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          current_head=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)
+          [[ "$current_head" == "$GITHUB_SHA" ]] || {
+            printf 'refusing to publish superseded commit %s; main is %s\n' "$GITHUB_SHA" "$current_head" >&2
+            exit 1
+          }
+
+          verify_asset_names() {
+            local assets_json
+            local -a remote_names local_names
+            assets_json=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq .assets)
+            mapfile -t remote_names < <(jq -r '.[].name' <<<"$assets_json" | sort)
+            mapfile -t local_names < <(find release -maxdepth 1 -type f -exec basename {} \; | sort)
+            [[ "${remote_names[*]}" == "${local_names[*]}" ]]
+          }
+
+          verify_assets() {
+            local assets_json file name expected_digest expected_size
+            verify_asset_names || return 1
+            assets_json=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq .assets)
+            for file in release/*; do
+              name=${file#release/}
+              [[ "$(jq --arg name "$name" '[.[] | select(.name == $name)] | length' <<<"$assets_json")" == 1 ]] || return 1
+              [[ "$(jq -r --arg name "$name" '.[] | select(.name == $name) | .state' <<<"$assets_json")" == uploaded ]] || return 1
+              expected_size=$(stat -c %s "$file")
+              [[ "$(jq -r --arg name "$name" '.[] | select(.name == $name) | .size' <<<"$assets_json")" == "$expected_size" ]] || return 1
+              expected_digest="sha256:$(sha256sum "$file" | cut -d' ' -f1)"
+              [[ "$(jq -r --arg name "$name" '.[] | select(.name == $name) | .digest' <<<"$assets_json")" == "$expected_digest" ]] || return 1
+            done
+          }
+
+          verify_published_release() {
+            local state
+            state=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}")
+            [[ "$(jq -r .tag_name <<<"$state")" == "$RELEASE_TAG" ]] || return 1
+            [[ "$(jq -r .draft <<<"$state")" == false ]] || return 1
+            [[ "$(jq -r .prerelease <<<"$state")" == true ]] || return 1
+            [[ "$(jq -r .immutable <<<"$state")" == true ]] || return 1
+          }
+
+          release_json=$(gh api graphql -f query='query($owner:String!,$name:String!,$tag:String!){repository(owner:$owner,name:$name){release(tagName:$tag){tagName isDraft isPrerelease}}}' -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F tag="$RELEASE_TAG")
+          if [[ "$(jq -r '.data.repository.release == null' <<<"$release_json")" == true ]]; then
+            existing_tag=$(git ls-remote --refs origin "refs/tags/${RELEASE_TAG}")
+            [[ -z "$existing_tag" ]] || {
+              printf 'tag %s exists without its managed release\n' "$RELEASE_TAG" >&2
+              exit 1
+            }
+            gh release create "$RELEASE_TAG" release/* \
+              --target "$GITHUB_SHA" \
+              --title "Mosh continuous build ${RELEASE_TAG}" \
+              --notes "Automated immutable build of ${GITHUB_SHA}. See README.md for installation and verification instructions." \
+              --draft \
+              --prerelease
+            release_is_draft=true
+          else
+            [[ "$(jq -r '.data.repository.release.tagName' <<<"$release_json")" == "$RELEASE_TAG" ]]
+            [[ "$(jq -r '.data.repository.release.isPrerelease' <<<"$release_json")" == true ]]
+            release_is_draft=$(jq -r '.data.repository.release.isDraft' <<<"$release_json")
+            git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+            [[ "$(git rev-list -n 1 "$RELEASE_TAG")" == "$GITHUB_SHA" ]] || {
+              printf 'existing release tag does not point to %s\n' "$GITHUB_SHA" >&2
+              exit 1
+            }
+            if [[ "$release_is_draft" == false ]]; then
+              verify_published_release && verify_asset_names || {
+                printf 'published release is not immutable or has unexpected asset names\n' >&2
+                exit 1
+              }
+              exit 0
+            fi
+            [[ "$release_is_draft" == true ]]
+            mapfile -t unexpected < <(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.assets[].name' | while read -r name; do [[ -f "release/$name" ]] || printf '%s\n' "$name"; done)
+            [[ ${#unexpected[@]} -eq 0 ]] || {
+              printf 'draft release contains unexpected assets: %s\n' "${unexpected[*]}" >&2
+              exit 1
+            }
+            gh release upload "$RELEASE_TAG" release/* --clobber
+          fi
+
+          verify_assets || {
+            printf 'draft release assets failed post-upload verification\n' >&2
+            exit 1
+          }
+          git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          [[ "$(git rev-list -n 1 "$RELEASE_TAG")" == "$GITHUB_SHA" ]]
+          current_head=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)
+          [[ "$current_head" == "$GITHUB_SHA" ]] || {
+            printf 'refusing to publish superseded commit %s; main is now %s\n' "$GITHUB_SHA" "$current_head" >&2
+            exit 1
+          }
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease
+
+          verified=false
+          for attempt in {1..12}; do
+            if verify_published_release && verify_assets; then
+              verified=true
+              break
+            fi
+            printf 'waiting for immutable release state (attempt %s/12)\n' "$attempt" >&2
+            sleep 5
+          done
+          [[ "$verified" == true ]] || {
+            printf 'published release did not become immutable with the expected assets\n' >&2
+            exit 1
+          }

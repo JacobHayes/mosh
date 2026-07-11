@@ -17,12 +17,21 @@ export DEB_BUILD_MAINT_OPTIONS = hardening=-stackprotector
 %:
 	dh $@ --with autoreconf
 
+# Continuous prerelease packages target multiple Ubuntu LTS releases.  Their
+# C++-facing dependencies must be linked statically to avoid protobuf and
+# similar ABI transitions between releases.  Distribution builds keep their
+# normal dynamic-linking policy unless they explicitly opt in.
+ifneq ($(MOSH_STATIC_PRERELEASE),)
+PRERELEASE_CONFIGURE_FLAGS = --enable-static-libraries
+endif
+
 override_dh_auto_configure:
 	dh_auto_configure -- \
 		--disable-silent-rules \
 		--enable-ufw \
 		--enable-completion \
-		--enable-compile-warnings=error
+		--enable-compile-warnings=error \
+		$(PRERELEASE_CONFIGURE_FLAGS)
 
 override_dh_perl:
 	# mosh only uses Perl modules in perl-base.

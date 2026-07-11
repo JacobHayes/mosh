@@ -1,4 +1,4 @@
-[![ci](https://github.com/mobile-shell/mosh/actions/workflows/ci.yml/badge.svg)](https://github.com/mobile-shell/mosh/actions/workflows/ci.yml)
+[![ci](https://github.com/JacobHayes/mosh/actions/workflows/ci.yml/badge.svg)](https://github.com/JacobHayes/mosh/actions/workflows/ci.yml)
 
 Mosh: the mobile shell
 ======================
@@ -62,6 +62,77 @@ Getting Mosh
   [The Mosh web site](https://mosh.org/#getting) has information about
   packages for many operating systems, as well as instructions for building
   from source.
+
+### Continuous prereleases
+
+The newest head pushed to `main` is tested and, if every source, package, and
+cross-LTS smoke test passes, published as an immutable GitHub prerelease. A
+release is named `build-<commit-UTC-time>-<short-SHA>` and contains one source
+tarball, Ubuntu `amd64` and `arm64` packages, and `SHA256SUMS`. These are
+bleeding-edge development builds rather than stable Mosh releases; all older
+builds remain available for reproducibility and rollback.
+
+The `.deb` installer supports Ubuntu LTS 22.04, 24.04, and 26.04 on `amd64`
+and `arm64`. The packages are built on Ubuntu 22.04 with their C++-facing
+libraries linked statically, then installed and exercised on every supported
+release and architecture before publication. Other distributions, Ubuntu
+releases, and architectures are not supported by this installer.
+
+Inspect the installer before running it (recommended):
+
+```sh
+curl --fail --show-error --silent --location \
+  https://raw.githubusercontent.com/JacobHayes/mosh/main/scripts/install-prerelease.sh \
+  --output install-prerelease.sh
+less install-prerelease.sh
+bash install-prerelease.sh
+```
+
+Or, if you accept the risk of piping the current `main` version directly to a
+shell:
+
+```sh
+curl --fail --show-error --silent --location \
+  https://raw.githubusercontent.com/JacobHayes/mosh/main/scripts/install-prerelease.sh \
+  | bash
+```
+
+The script queries the GitHub Releases API (not the `/latest` redirect), picks
+the newest matching non-draft prerelease, validates release and asset URLs,
+verifies the exact package checksum and Debian metadata, refuses downgrades,
+and invokes `sudo` only when it is not already running as root. To install a
+specific immutable build, use:
+
+```sh
+bash install-prerelease.sh --release-tag build-YYYYMMDDTHHMMSSZ-abcdef0
+# When piping: curl ... | bash -s -- --release-tag build-YYYYMMDDTHHMMSSZ-abcdef0
+```
+
+For a manual install, open the repository's **Releases** page, choose a
+matching prerelease, and download `SHA256SUMS` plus the `.deb` matching
+`dpkg --print-architecture`. Verify and install it:
+
+```sh
+deb=mosh_VERSION_amd64.deb       # or the arm64 asset name
+grep -F "  $deb" SHA256SUMS > "$deb.sha256"
+test "$(wc -l < "$deb.sha256")" -eq 1
+sha256sum -c "$deb.sha256"
+sudo apt install "./$deb"
+```
+
+GitHub also records build-provenance attestations for the tarball, both
+packages, and `SHA256SUMS`. With the GitHub CLI installed, verify any downloaded
+asset independently:
+
+```sh
+gh attestation verify "$deb" --repo JacobHayes/mosh
+gh attestation verify SHA256SUMS --repo JacobHayes/mosh
+```
+
+Native scrollback is a protocol extension in these builds. Install the
+continuous prerelease on **both** the client machine (`mosh-client`) and remote
+host (`mosh-server`) to use it; a prerelease client remains usable with an
+upstream server, but native scrollback will not activate.
 
   Note that `mosh-client` receives an AES session key as an environment
   variable.  If you are porting Mosh to a new operating system, please make

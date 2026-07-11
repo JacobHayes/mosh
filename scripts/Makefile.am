@@ -1,4 +1,5 @@
-EXTRA_DIST = wrap-compiler-for-flag-check mosh.pl
+EXTRA_DIST = wrap-compiler-for-flag-check mosh.pl install-prerelease.sh \
+	tests/install-prerelease-static.sh
 if BUILD_CLIENT
   bin_SCRIPTS = mosh
 endif
