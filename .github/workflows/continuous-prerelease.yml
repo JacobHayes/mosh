@@ -265,11 +265,29 @@ jobs:
             printf 'refusing to publish superseded commit %s; main is %s\n' "$GITHUB_SHA" "$current_head" >&2
             exit 1
           }
+          release_endpoint="repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
+
+          locate_draft() {
+            local state
+            local -a draft_ids
+            mapfile -t draft_ids < <(
+              gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                --jq ".[] | select(.draft == true and .tag_name == \"${RELEASE_TAG}\") | .id"
+            )
+            [[ ${#draft_ids[@]} -eq 1 ]] || {
+              printf 'expected one managed draft for %s, found %s\n' "$RELEASE_TAG" "${#draft_ids[@]}" >&2
+              return 1
+            }
+            release_endpoint="repos/${GITHUB_REPOSITORY}/releases/${draft_ids[0]}"
+            state=$(gh api "$release_endpoint")
+            [[ "$(jq -r .tag_name <<<"$state")" == "$RELEASE_TAG" ]]
+            [[ "$(jq -r .target_commitish <<<"$state")" == "$GITHUB_SHA" ]]
+          }
 
           verify_asset_names() {
             local assets_json
             local -a remote_names local_names
-            assets_json=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq .assets)
+            assets_json=$(gh api "$release_endpoint" --jq .assets)
             mapfile -t remote_names < <(jq -r '.[].name' <<<"$assets_json" | sort)
             mapfile -t local_names < <(find release -maxdepth 1 -type f -exec basename {} \; | sort)
             [[ "${remote_names[*]}" == "${local_names[*]}" ]]
@@ -278,7 +296,7 @@ jobs:
           verify_assets() {
             local assets_json file name expected_digest expected_size
             verify_asset_names || return 1
-            assets_json=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq .assets)
+            assets_json=$(gh api "$release_endpoint" --jq .assets)
             for file in release/*; do
               name=${file#release/}
               [[ "$(jq --arg name "$name" '[.[] | select(.name == $name)] | length' <<<"$assets_json")" == 1 ]] || return 1
@@ -292,7 +310,7 @@ jobs:
 
           verify_published_release() {
             local state
-            state=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}")
+            state=$(gh api "$release_endpoint")
             [[ "$(jq -r .tag_name <<<"$state")" == "$RELEASE_TAG" ]] || return 1
             [[ "$(jq -r .draft <<<"$state")" == false ]] || return 1
             [[ "$(jq -r .prerelease <<<"$state")" == true ]] || return 1
@@ -313,16 +331,17 @@ jobs:
               --draft \
               --prerelease
             release_is_draft=true
+            locate_draft
           else
             [[ "$(jq -r '.data.repository.release.tagName' <<<"$release_json")" == "$RELEASE_TAG" ]]
             [[ "$(jq -r '.data.repository.release.isPrerelease' <<<"$release_json")" == true ]]
             release_is_draft=$(jq -r '.data.repository.release.isDraft' <<<"$release_json")
-            git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
-            [[ "$(git rev-list -n 1 "$RELEASE_TAG")" == "$GITHUB_SHA" ]] || {
-              printf 'existing release tag does not point to %s\n' "$GITHUB_SHA" >&2
-              exit 1
-            }
             if [[ "$release_is_draft" == false ]]; then
+              git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+              [[ "$(git rev-list -n 1 "$RELEASE_TAG")" == "$GITHUB_SHA" ]] || {
+                printf 'existing release tag does not point to %s\n' "$GITHUB_SHA" >&2
+                exit 1
+              }
               verify_published_release && verify_asset_names || {
                 printf 'published release is not immutable or has unexpected asset names\n' >&2
                 exit 1
@@ -330,7 +349,8 @@ jobs:
               exit 0
             fi
             [[ "$release_is_draft" == true ]]
-            mapfile -t unexpected < <(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.assets[].name' | while read -r name; do [[ -f "release/$name" ]] || printf '%s\n' "$name"; done)
+            locate_draft
+            mapfile -t unexpected < <(gh api "$release_endpoint" --jq '.assets[].name' | while read -r name; do [[ -f "release/$name" ]] || printf '%s\n' "$name"; done)
             [[ ${#unexpected[@]} -eq 0 ]] || {
               printf 'draft release contains unexpected assets: %s\n' "${unexpected[*]}" >&2
               exit 1
@@ -342,14 +362,16 @@ jobs:
             printf 'draft release assets failed post-upload verification\n' >&2
             exit 1
           }
-          git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
-          [[ "$(git rev-list -n 1 "$RELEASE_TAG")" == "$GITHUB_SHA" ]]
+          [[ "$(gh api "$release_endpoint" --jq .target_commitish)" == "$GITHUB_SHA" ]]
           current_head=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)
           [[ "$current_head" == "$GITHUB_SHA" ]] || {
             printf 'refusing to publish superseded commit %s; main is now %s\n' "$GITHUB_SHA" "$current_head" >&2
             exit 1
           }
-          gh release edit "$RELEASE_TAG" --draft=false --prerelease
+          gh api --method PATCH "$release_endpoint" -F draft=false -F prerelease=true >/dev/null
+          release_endpoint="repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
+          git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          [[ "$(git rev-list -n 1 "$RELEASE_TAG")" == "$GITHUB_SHA" ]]
 
           verified=false
           for attempt in {1..12}; do
