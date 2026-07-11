@@ -69,7 +69,9 @@ jobs:
           sudo apt-get install -y autoconf automake build-essential libprotobuf-dev libssl-dev libutempter-dev pkg-config protobuf-compiler tmux
       - name: Install macOS build dependencies
         if: runner.os == 'macOS'
-        run: brew install automake protobuf tmux
+        # The tmux-driven network timing test is not reliable on GitHub's
+        # virtualized macOS runners; Linux jobs run the complete tmux suite.
+        run: brew install automake protobuf
       - name: Build and test
         run: |
           set -Eeuo pipefail
