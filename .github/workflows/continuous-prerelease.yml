@@ -270,14 +270,23 @@ jobs:
           release_endpoint="repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
 
           locate_draft() {
-            local state
+            local attempt state
             local -a draft_ids
-            mapfile -t draft_ids < <(
-              gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-                --jq ".[] | select(.draft == true and .tag_name == \"${RELEASE_TAG}\") | .id"
-            )
+            for attempt in {1..12}; do
+              mapfile -t draft_ids < <(
+                gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                  --jq ".[] | select(.draft == true and .tag_name == \"${RELEASE_TAG}\") | .id"
+              )
+              [[ ${#draft_ids[@]} -le 1 ]] || {
+                printf 'multiple managed drafts found for %s\n' "$RELEASE_TAG" >&2
+                return 1
+              }
+              [[ ${#draft_ids[@]} -eq 0 ]] || break
+              printf 'waiting for draft release visibility (attempt %s/12)\n' "$attempt" >&2
+              sleep 2
+            done
             [[ ${#draft_ids[@]} -eq 1 ]] || {
-              printf 'expected one managed draft for %s, found %s\n' "$RELEASE_TAG" "${#draft_ids[@]}" >&2
+              printf 'managed draft for %s did not become visible\n' "$RELEASE_TAG" >&2
               return 1
             }
             release_endpoint="repos/${GITHUB_REPOSITORY}/releases/${draft_ids[0]}"
