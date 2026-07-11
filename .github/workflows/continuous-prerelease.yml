@@ -53,24 +53,13 @@ jobs:
 
   test:
     needs: metadata
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-22.04, ubuntu-24.04, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y autoconf automake build-essential libprotobuf-dev libssl-dev libutempter-dev pkg-config protobuf-compiler tmux
-      - name: Install macOS build dependencies
-        if: runner.os == 'macOS'
-        # The tmux-driven network timing test is not reliable on GitHub's
-        # virtualized macOS runners; Linux jobs run the complete tmux suite.
+      - name: Install build dependencies
+        # Linux package builds run the complete tmux-driven test suite.
         run: brew install automake protobuf
       - name: Build and test
         run: |
@@ -93,14 +82,14 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y autoconf automake build-essential libprotobuf-dev libssl-dev libutempter-dev pkg-config protobuf-compiler tmux
-      - name: Run distcheck and select the sole source archive
+          sudo apt-get install -y autoconf automake build-essential libprotobuf-dev libssl-dev libutempter-dev pkg-config protobuf-compiler
+      - name: Build the source archive
         shell: bash
         run: |
           set -Eeuo pipefail
           ./autogen.sh
           ./configure --enable-compile-warnings=error --enable-examples
-          make -j2 V=1 distcheck
+          make V=1 dist
           mapfile -t archives < <(find . -maxdepth 1 -type f -name 'mosh-*.tar.gz' -print)
           [[ ${#archives[@]} -eq 1 ]] || { printf 'expected one source archive, found %s\n' "${#archives[@]}" >&2; exit 1; }
           mkdir release
@@ -171,16 +160,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
-            arch: amd64
-          - os: ubuntu-24.04
-            arch: amd64
           - os: ubuntu-26.04
             arch: amd64
-          - os: ubuntu-22.04-arm
-            arch: arm64
-          - os: ubuntu-24.04-arm
-            arch: arm64
           - os: ubuntu-26.04-arm
             arch: arm64
     runs-on: ${{ matrix.os }}

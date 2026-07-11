@@ -73,9 +73,9 @@ bleeding-edge development builds rather than stable Mosh releases; all older
 builds remain available for reproducibility and rollback.
 
 The `.deb` installer supports Ubuntu LTS 22.04, 24.04, and 26.04 on `amd64`
-and `arm64`. The packages are built on Ubuntu 22.04 with their C++-facing
-libraries linked statically, then installed and exercised on every supported
-release and architecture before publication. Other distributions, Ubuntu
+and `arm64`. The packages are built and tested on Ubuntu 22.04 with their
+C++-facing libraries linked statically, then installed and smoke-tested on the
+newest supported LTS on both architectures. Other distributions, Ubuntu
 releases, and architectures are not supported by this installer.
 
 Inspect the installer before running it (recommended):
