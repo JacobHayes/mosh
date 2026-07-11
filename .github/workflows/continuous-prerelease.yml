@@ -76,7 +76,7 @@ jobs:
           ./autogen.sh
           ./configure --enable-compile-warnings=error --enable-examples
           make -j2 V=1
-          make -j2 V=1 check
+          make V=1 check
       - name: Show test logs after failure
         if: failure()
         run: find . -name test-suite.log -type f -exec sh -c 'printf "\n===== %s =====\n" "$1"; cat "$1"' _ {} \;
@@ -317,8 +317,16 @@ jobs:
             [[ "$(jq -r .immutable <<<"$state")" == true ]] || return 1
           }
 
-          release_json=$(gh api graphql -f query='query($owner:String!,$name:String!,$tag:String!){repository(owner:$owner,name:$name){release(tagName:$tag){tagName isDraft isPrerelease}}}' -F owner="${GITHUB_REPOSITORY_OWNER}" -F name="${GITHUB_REPOSITORY#*/}" -F tag="$RELEASE_TAG")
-          if [[ "$(jq -r '.data.repository.release == null' <<<"$release_json")" == true ]]; then
+          mapfile -t release_ids < <(
+            gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"${RELEASE_TAG}\") | .id"
+          )
+          [[ ${#release_ids[@]} -le 1 ]] || {
+            printf 'multiple releases use managed tag %s\n' "$RELEASE_TAG" >&2
+            exit 1
+          }
+
+          if [[ ${#release_ids[@]} -eq 0 ]]; then
             existing_tag=$(git ls-remote --refs origin "refs/tags/${RELEASE_TAG}")
             [[ -z "$existing_tag" ]] || {
               printf 'tag %s exists without its managed release\n' "$RELEASE_TAG" >&2
@@ -330,12 +338,14 @@ jobs:
               --notes "Automated immutable build of ${GITHUB_SHA}. See README.md for installation and verification instructions." \
               --draft \
               --prerelease
-            release_is_draft=true
             locate_draft
           else
-            [[ "$(jq -r '.data.repository.release.tagName' <<<"$release_json")" == "$RELEASE_TAG" ]]
-            [[ "$(jq -r '.data.repository.release.isPrerelease' <<<"$release_json")" == true ]]
-            release_is_draft=$(jq -r '.data.repository.release.isDraft' <<<"$release_json")
+            release_endpoint="repos/${GITHUB_REPOSITORY}/releases/${release_ids[0]}"
+            release_state=$(gh api "$release_endpoint")
+            [[ "$(jq -r .tag_name <<<"$release_state")" == "$RELEASE_TAG" ]]
+            [[ "$(jq -r .target_commitish <<<"$release_state")" == "$GITHUB_SHA" ]]
+            [[ "$(jq -r .prerelease <<<"$release_state")" == true ]]
+            release_is_draft=$(jq -r .draft <<<"$release_state")
             if [[ "$release_is_draft" == false ]]; then
               git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
               [[ "$(git rev-list -n 1 "$RELEASE_TAG")" == "$GITHUB_SHA" ]] || {
@@ -349,7 +359,6 @@ jobs:
               exit 0
             fi
             [[ "$release_is_draft" == true ]]
-            locate_draft
             mapfile -t unexpected < <(gh api "$release_endpoint" --jq '.assets[].name' | while read -r name; do [[ -f "release/$name" ]] || printf '%s\n' "$name"; done)
             [[ ${#unexpected[@]} -eq 0 ]] || {
               printf 'draft release contains unexpected assets: %s\n' "${unexpected[*]}" >&2
