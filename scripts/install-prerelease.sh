@@ -99,7 +99,7 @@ import datetime
 import json
 import re
 import sys
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 json_file, mode, arch, repository, download_root = sys.argv[1:]
 with open(json_file, encoding="utf-8") as stream:
@@ -164,7 +164,7 @@ for release in candidates:
             raise SystemExit(f"asset {name} has an unexpected API URL")
         parsed = urlsplit(url)
         expected_path = f"/{repository}/releases/download/{tag}/{name}"
-        if parsed.scheme != "https" or parsed.netloc != "github.com" or parsed.path != expected_path or parsed.query or parsed.fragment:
+        if parsed.scheme != "https" or parsed.netloc != "github.com" or unquote(parsed.path) != expected_path or parsed.query or parsed.fragment:
             raise SystemExit(f"asset {name} has an unexpected download URL")
         fields.extend((name, url))
     print("\t".join(fields))

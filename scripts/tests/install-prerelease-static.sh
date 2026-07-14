@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from urllib.parse import quote
 
 installer = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
 match = re.search(r"select_release\(\) \{.*?<<'PY'\n(.*?)\nPY\n\}", installer, re.S)
@@ -30,7 +31,7 @@ def asset(tag, name, asset_id):
     return {
         "name": name,
         "url": f"https://api.github.com/repos/{repository}/releases/assets/{asset_id}",
-        "browser_download_url": f"{download_root}/{tag}/{name}",
+        "browser_download_url": f"{download_root}/{tag}/{quote(name, safe='')}",
     }
 
 
