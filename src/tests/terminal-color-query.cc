@@ -22,22 +22,33 @@ int main( void )
 
   terminal.set_OSC_color_response( 10, "rgb:0000/0000/0000" );
   terminal.set_OSC_color_response( 11, "rgb:ffff/ffff/ffff" );
+  terminal.set_OSC_color_response( 12, "rgb:8888/8888/8888" );
 
   assert( terminal.act( "\033]10;?\033\\" ) == "\033]10;rgb:0000/0000/0000\033\\" );
   assert( terminal.act( "\033]11;?\007" ) == "\033]11;rgb:ffff/ffff/ffff\033\\" );
+  assert( terminal.act( "\033]12;?\033\\" ) == "\033]12;rgb:8888/8888/8888\033\\" );
 
   terminal.set_OSC_color_response( 11, "\033]52;c;bad" );
   assert( terminal.act( "\033]11;?\033\\" ) == "\033]11;rgb:ffff/ffff/ffff\033\\" );
 
+  assert( terminal.act( "\033]12;rgb:1111/2222/3333\033\\" ).empty() );
+  assert( terminal.act( "\033]12;?\033\\" ) == "\033]12;rgb:1111/2222/3333\033\\" );
+
+  Terminal::Complete terminal_without_local_cursor_color( 80, 24 );
+  assert( terminal_without_local_cursor_color.act( "\033]12;rgb:1111/2222/3333\033\\" ).empty() );
+  assert( terminal_without_local_cursor_color.act( "\033]12;?\033\\" ) == "\033]12;rgb:1111/2222/3333\033\\" );
+  assert( terminal_without_local_cursor_color.act( "\033]112\033\\" ).empty() );
+  assert( terminal_without_local_cursor_color.act( "\033]12;?\033\\" ).empty() );
+
   Network::UserStream colors;
-  colors.push_back_terminal_color( 11, "rgb:1111/2222/3333" );
+  colors.push_back_terminal_color( 12, "rgb:1111/2222/3333" );
 
   Network::UserStream decoded;
   decoded.apply_string( colors.init_diff() );
 
   assert( decoded.size() == 1 );
   assert( decoded.get_event( 0 ).type == Network::TerminalColorType );
-  assert( decoded.get_event( 0 ).terminal_color_osc == 11 );
+  assert( decoded.get_event( 0 ).terminal_color_osc == 12 );
   assert( decoded.get_event( 0 ).terminal_color == "rgb:1111/2222/3333" );
 
   return 0;
