@@ -73,6 +73,21 @@ void Esc_Dispatch::act_on_terminal( Terminal::Emulator* emu ) const
   emu->Esc_dispatch( this );
 }
 
+void Hook::act_on_terminal( Terminal::Emulator* emu ) const
+{
+  emu->DCS_hook( this );
+}
+
+void Put::act_on_terminal( Terminal::Emulator* emu ) const
+{
+  emu->DCS_put( this );
+}
+
+void Unhook::act_on_terminal( Terminal::Emulator* emu ) const
+{
+  emu->DCS_unhook( this );
+}
+
 void OSC_Put::act_on_terminal( Terminal::Emulator* emu ) const
 {
   emu->dispatch.OSC_put( this );

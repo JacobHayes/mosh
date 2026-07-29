@@ -154,6 +154,21 @@ void Emulator::CSI_dispatch( const Parser::CSI_Dispatch* act )
   dispatch.dispatch( CSI, act, &fb );
 }
 
+void Emulator::DCS_hook( const Parser::Hook* act )
+{
+  dispatch.DCS_hook( act );
+}
+
+void Emulator::DCS_put( const Parser::Put* act )
+{
+  dispatch.DCS_put( act );
+}
+
+void Emulator::DCS_unhook( const Parser::Unhook* act )
+{
+  dispatch.DCS_dispatch( act, &fb );
+}
+
 void Emulator::OSC_end( const Parser::OSC_End* act )
 {
   dispatch.OSC_dispatch( act, &fb );

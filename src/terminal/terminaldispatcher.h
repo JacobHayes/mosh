@@ -45,6 +45,9 @@ class Clear;
 class Esc_Dispatch;
 class CSI_Dispatch;
 class Execute;
+class Hook;
+class Put;
+class Unhook;
 class OSC_Start;
 class OSC_Put;
 class OSC_End;
@@ -95,6 +98,7 @@ private:
   bool parsed;
 
   std::string dispatch_chars;
+  std::vector<wchar_t> DCS_string;
   std::vector<wchar_t> OSC_string;
   std::map<int, std::string> osc_color_responses;
 
@@ -118,9 +122,15 @@ public:
 
   void dispatch( Function_Type type, const Parser::Action* act, Framebuffer* fb );
   std::string get_dispatch_chars( void ) const { return dispatch_chars; }
+  const std::string& get_params_string( void ) const { return params; }
+  std::vector<wchar_t> get_DCS_string( void ) const { return DCS_string; }
   std::vector<wchar_t> get_OSC_string( void ) const { return OSC_string; }
   void set_OSC_color_response( int osc_number, const std::string& color );
   std::string get_OSC_color_response( int osc_number ) const;
+
+  void DCS_hook( const Parser::Hook* act );
+  void DCS_put( const Parser::Put* act );
+  void DCS_dispatch( const Parser::Unhook* act, Framebuffer* fb );
 
   void OSC_put( const Parser::OSC_Put* act );
   void OSC_start( const Parser::OSC_Start* act );

@@ -62,19 +62,34 @@ public:
     blink,
     inverse,
     invisible,
+    strikethrough,
     SIZE
   } attribute_type;
 
+  typedef enum
+  {
+    UNDERLINE_NONE = 0,
+    UNDERLINE_SINGLE = 1,
+    UNDERLINE_DOUBLE = 2,
+    UNDERLINE_CURLY = 3,
+    UNDERLINE_DOTTED = 4,
+    UNDERLINE_DASHED = 5
+  } underline_style_type;
+
 private:
-  static const uint64_t true_color_mask = 0x1000000;
-  uint64_t foreground_color : 25;
-  uint64_t background_color : 25;
-  uint64_t attributes : 8;
+  static const color_type true_color_mask = 0x1000000;
+  color_type foreground_color;
+  color_type background_color;
+  color_type underline_color;
+  uint16_t attributes;
+  uint8_t underline_style;
 
 public:
   Renditions( color_type s_background );
   void set_foreground_color( int num );
   void set_background_color( int num );
+  void set_underline_color( int num );
+  void set_underline_style( int style );
   void set_rendition( color_type num );
   std::string sgr( void ) const;
 
@@ -91,14 +106,20 @@ public:
   bool operator==( const Renditions& x ) const
   {
     return ( attributes == x.attributes ) && ( foreground_color == x.foreground_color )
-           && ( background_color == x.background_color );
+           && ( background_color == x.background_color ) && ( underline_color == x.underline_color )
+           && ( underline_style == x.underline_style );
   }
   void set_attribute( attribute_type attr, bool val )
   {
     attributes = val ? ( attributes | ( 1 << attr ) ) : ( attributes & ~( 1 << attr ) );
   }
   bool get_attribute( attribute_type attr ) const { return attributes & ( 1 << attr ); }
-  void clear_attributes() { attributes = 0; }
+  int get_underline_style( void ) const { return underline_style; }
+  void clear_attributes()
+  {
+    attributes = 0;
+    underline_style = UNDERLINE_NONE;
+  }
 };
 
 class Hyperlink
@@ -313,6 +334,22 @@ public:
   bool auto_wrap_mode;
   bool insert_mode;
   bool cursor_visible;
+  bool cursor_blink;
+
+  typedef enum
+  {
+    CURSOR_SHAPE_DEFAULT = 0,
+    CURSOR_SHAPE_BLOCK,
+    CURSOR_SHAPE_UNDERLINE,
+    CURSOR_SHAPE_BAR
+  } cursor_shape_type;
+
+  cursor_shape_type cursor_shape;
+  std::string cursor_color;
+
+  int cursor_style_param( void ) const;
+  void set_cursor_style( int param );
+
   bool reverse_video;
   bool bracketed_paste;
 
@@ -390,7 +427,9 @@ public:
     /* only compare fields that affect display */
     return ( width == x.width ) && ( height == x.height ) && ( cursor_col == x.cursor_col )
            && ( cursor_row == x.cursor_row ) && ( cursor_visible == x.cursor_visible )
-           && ( reverse_video == x.reverse_video ) && ( renditions == x.renditions )
+           && ( cursor_blink == x.cursor_blink ) && ( cursor_shape == x.cursor_shape )
+           && ( cursor_color == x.cursor_color ) && ( reverse_video == x.reverse_video )
+           && ( renditions == x.renditions )
            && ( bracketed_paste == x.bracketed_paste ) && ( mouse_reporting_mode == x.mouse_reporting_mode )
            && ( mouse_focus_event == x.mouse_focus_event ) && ( mouse_alternate_scroll == x.mouse_alternate_scroll )
            && ( mouse_encoding_mode == x.mouse_encoding_mode ) && hyperlink == x.hyperlink;

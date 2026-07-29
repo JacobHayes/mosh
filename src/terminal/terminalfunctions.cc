@@ -304,6 +304,8 @@ static bool* get_DEC_mode( int param, Framebuffer* fb )
       return &( fb->ds.origin_mode );
     case 7: /* auto wrap */
       return &( fb->ds.auto_wrap_mode );
+    case 12: /* cursor blink */
+      return &( fb->ds.cursor_blink );
     case 25:
       return &( fb->ds.cursor_visible );
     case 1004: /* xterm mouse focus event */
@@ -405,6 +407,82 @@ static void CSI_RM( Framebuffer* fb, Dispatcher* dispatch )
 static Function func_CSI_SM( CSI, "h", CSI_SM );
 static Function func_CSI_RM( CSI, "l", CSI_RM );
 
+static int mode_status( const bool recognized, const bool set )
+{
+  if ( !recognized ) {
+    return 0;
+  }
+  return set ? 1 : 2;
+}
+
+static int DEC_mode_status( const int param, const Framebuffer* fb )
+{
+  switch ( param ) {
+    case 1:
+      return mode_status( true, fb->ds.application_mode_cursor_keys );
+    case 5:
+      return mode_status( true, fb->ds.reverse_video );
+    case 6:
+      return mode_status( true, fb->ds.origin_mode );
+    case 7:
+      return mode_status( true, fb->ds.auto_wrap_mode );
+    case 12:
+      return mode_status( true, fb->ds.cursor_blink );
+    case 25:
+      return mode_status( true, fb->ds.cursor_visible );
+    case 9:
+    case 1000:
+    case 1001:
+    case 1002:
+    case 1003:
+      return mode_status( true, fb->ds.mouse_reporting_mode == param );
+    case 1004:
+      return mode_status( true, fb->ds.mouse_focus_event );
+    case 1005:
+    case 1006:
+    case 1015:
+      return mode_status( true, fb->ds.mouse_encoding_mode == param );
+    case 1007:
+      return mode_status( true, fb->ds.mouse_alternate_scroll );
+    case 1047:
+    case 1049:
+      return mode_status( true, fb->get_alt_screen_active() );
+    case 2004:
+      return mode_status( true, fb->ds.bracketed_paste );
+    default:
+      return 0;
+  }
+}
+
+static int ANSI_mode_status( const int param, const Framebuffer* fb )
+{
+  switch ( param ) {
+    case 4:
+      return mode_status( true, fb->ds.insert_mode );
+    default:
+      return 0;
+  }
+}
+
+static void CSI_DECRQM_DEC( Framebuffer* fb, Dispatcher* dispatch )
+{
+  const int param = dispatch->getparam( 0, 0 );
+  char response[64];
+  snprintf( response, sizeof( response ), "\033[?%d;%d$y", param, DEC_mode_status( param, fb ) );
+  dispatch->terminal_to_host.append( response );
+}
+
+static void CSI_DECRQM_ANSI( Framebuffer* fb, Dispatcher* dispatch )
+{
+  const int param = dispatch->getparam( 0, 0 );
+  char response[64];
+  snprintf( response, sizeof( response ), "\033[%d;%d$y", param, ANSI_mode_status( param, fb ) );
+  dispatch->terminal_to_host.append( response );
+}
+
+static Function func_CSI_DECRQM_DEC( CSI, "?$p", CSI_DECRQM_DEC );
+static Function func_CSI_DECRQM_ANSI( CSI, "$p", CSI_DECRQM_ANSI );
+
 /* set top and bottom margins */
 static void CSI_DECSTBM( Framebuffer* fb, Dispatcher* dispatch )
 {
@@ -431,39 +509,189 @@ static void Ctrl_BEL( Framebuffer* fb, Dispatcher* dispatch __attribute( ( unuse
 static Function func_Ctrl_BEL( CONTROL, "\x07", Ctrl_BEL );
 
 /* select graphics rendition -- e.g., bold, blinking, etc. */
+struct SGRParam
+{
+  std::vector<int> subparams;
+};
+
+static bool parse_unsigned_param( const std::string& str, const size_t begin, const size_t end, int& value )
+{
+  if ( begin == end ) {
+    return false;
+  }
+
+  int ret = 0;
+  for ( size_t loc = begin; loc < end; loc++ ) {
+    if ( str[loc] < '0' || str[loc] > '9' ) {
+      return false;
+    }
+    ret = ret * 10 + str[loc] - '0';
+    if ( ret > Dispatcher::PARAM_MAX ) {
+      return false;
+    }
+  }
+
+  value = ret;
+  return true;
+}
+
+static std::vector<SGRParam> parse_SGR_params( const std::string& params )
+{
+  std::vector<SGRParam> ret;
+
+  if ( params.empty() ) {
+    ret.push_back( SGRParam { std::vector<int>( 1, 0 ) } );
+    return ret;
+  }
+
+  size_t param_begin = 0;
+  while ( param_begin <= params.size() ) {
+    const size_t param_end = params.find( ';', param_begin );
+    const size_t this_param_end = param_end == std::string::npos ? params.size() : param_end;
+    SGRParam param;
+
+    size_t sub_begin = param_begin;
+    while ( sub_begin <= this_param_end ) {
+      const size_t sub_end = params.find( ':', sub_begin );
+      const size_t this_sub_end = ( sub_end == std::string::npos || sub_end > this_param_end ) ? this_param_end : sub_end;
+      int parsed = -1;
+      if ( parse_unsigned_param( params, sub_begin, this_sub_end, parsed ) ) {
+        param.subparams.push_back( parsed );
+      } else {
+        param.subparams.push_back( -1 );
+      }
+
+      if ( sub_end == std::string::npos || sub_end >= this_param_end ) {
+        break;
+      }
+      sub_begin = sub_end + 1;
+    }
+
+    ret.push_back( param );
+    if ( param_end == std::string::npos ) {
+      break;
+    }
+    param_begin = param_end + 1;
+  }
+
+  return ret;
+}
+
+static int SGR_primary_param( const SGRParam& param, const int defaultval )
+{
+  if ( param.subparams.empty() || param.subparams[0] < 0 ) {
+    return defaultval;
+  }
+  return param.subparams[0];
+}
+
+static bool valid_color_component( const int value )
+{
+  return value >= 0 && value <= 255;
+}
+
+static bool SGR_color_from_subparams( const std::vector<int>& subparams, unsigned int& color )
+{
+  if ( subparams.size() < 2 ) {
+    return false;
+  }
+
+  if ( subparams[1] == 5 ) {
+    if ( subparams.size() < 3 || !valid_color_component( subparams[2] ) ) {
+      return false;
+    }
+    color = subparams[2];
+    return true;
+  }
+
+  if ( subparams[1] == 2 ) {
+    if ( subparams.size() < 5 ) {
+      return false;
+    }
+    const size_t red_index = subparams.size() - 3;
+    const int red = subparams[red_index];
+    const int green = subparams[red_index + 1];
+    const int blue = subparams[red_index + 2];
+    if ( !valid_color_component( red ) || !valid_color_component( green ) || !valid_color_component( blue ) ) {
+      return false;
+    }
+    color = Renditions::make_true_color( red, green, blue );
+    return true;
+  }
+
+  return false;
+}
+
+static bool SGR_color_from_semicolon_params( const std::vector<SGRParam>& params,
+                                             const size_t loc,
+                                             unsigned int& color,
+                                             size_t& consumed )
+{
+  if ( loc + 2 < params.size() && SGR_primary_param( params[loc + 1], -1 ) == 5 ) {
+    const int index = SGR_primary_param( params[loc + 2], -1 );
+    if ( valid_color_component( index ) ) {
+      color = index;
+      consumed = 2;
+      return true;
+    }
+  }
+
+  if ( loc + 4 < params.size() && SGR_primary_param( params[loc + 1], -1 ) == 2 ) {
+    const int red = SGR_primary_param( params[loc + 2], -1 );
+    const int green = SGR_primary_param( params[loc + 3], -1 );
+    const int blue = SGR_primary_param( params[loc + 4], -1 );
+    if ( valid_color_component( red ) && valid_color_component( green ) && valid_color_component( blue ) ) {
+      color = Renditions::make_true_color( red, green, blue );
+      consumed = 4;
+      return true;
+    }
+  }
+
+  return false;
+}
+
+static void apply_SGR_color( Framebuffer* fb, const int rendition, const unsigned int color )
+{
+  switch ( rendition ) {
+    case 38:
+      fb->ds.set_foreground_color( color );
+      break;
+    case 48:
+      fb->ds.set_background_color( color );
+      break;
+    case 58:
+      fb->ds.get_renditions().set_underline_color( color );
+      break;
+    default:
+      break;
+  }
+}
+
 static void CSI_SGR( Framebuffer* fb, Dispatcher* dispatch )
 {
-  for ( int i = 0; i < dispatch->param_count(); i++ ) {
-    int rendition = dispatch->getparam( i, 0 );
-    /* We need to special-case the handling of [34]8 ; 5 ; Ps,
-       because Ps of 0 in that case does not mean reset to default, even
-       though it means that otherwise (as usually renditions are applied
-       in order). */
-    if ( ( rendition == 38 || rendition == 48 ) && ( dispatch->param_count() - i >= 3 )
-         && ( dispatch->getparam( i + 1, -1 ) == 5 ) ) {
-      ( rendition == 38 ) ? fb->ds.set_foreground_color( dispatch->getparam( i + 2, 0 ) )
-                          : fb->ds.set_background_color( dispatch->getparam( i + 2, 0 ) );
-      i += 2;
+  const std::vector<SGRParam> params = parse_SGR_params( dispatch->get_params_string() );
+
+  for ( size_t i = 0; i < params.size(); i++ ) {
+    const int rendition = SGR_primary_param( params[i], 0 );
+
+    if ( rendition == 4 && params[i].subparams.size() > 1 ) {
+      const int style = params[i].subparams[1] < 0 ? Renditions::UNDERLINE_SINGLE : params[i].subparams[1];
+      fb->ds.get_renditions().set_underline_style( style );
       continue;
     }
 
-    /* True color support: ESC[ ... [34]8;2;<r>;<g>;<b> ... m */
-    if ( ( rendition == 38 || rendition == 48 ) && ( dispatch->param_count() - i >= 5 )
-         && ( dispatch->getparam( i + 1, -1 ) == 2 ) ) {
-      unsigned int red = dispatch->getparam( i + 2, 0 );
-      unsigned int green = dispatch->getparam( i + 3, 0 );
-      unsigned int blue = dispatch->getparam( i + 4, 0 );
+    if ( rendition == 38 || rendition == 48 || rendition == 58 ) {
       unsigned int color;
-
-      color = Renditions::make_true_color( red, green, blue );
-
-      if ( rendition == 38 ) {
-        fb->ds.set_foreground_color( color );
-      } else {
-        fb->ds.set_background_color( color );
+      size_t consumed = 0;
+      if ( SGR_color_from_subparams( params[i].subparams, color ) ) {
+        apply_SGR_color( fb, rendition, color );
+        continue;
       }
-      i += 4;
-      continue;
+      if ( SGR_color_from_semicolon_params( params, i, color, consumed ) ) {
+        apply_SGR_color( fb, rendition, color );
+        i += consumed;
+        continue;
+      }
     }
 
     fb->ds.add_rendition( rendition );
@@ -608,18 +836,191 @@ static void CSI_DECSTR( Framebuffer* fb, Dispatcher* dispatch __attribute( ( unu
 
 static Function func_CSI_DECSTR( CSI, "!p", CSI_DECSTR );
 
-static bool Parse_OSC_8( const std::vector<wchar_t>& osc8_vector, std::string& osc8_str )
+/* set cursor style -- DECSCUSR */
+static void CSI_DECSCUSR( Framebuffer* fb, Dispatcher* dispatch )
 {
-  osc8_str.reserve( osc8_vector.size() );
-  for ( wchar_t wide_char : osc8_vector ) {
-    // Valid char range is 32-126, per
-    // https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda#encodings
+  fb->ds.set_cursor_style( dispatch->getparam( 0, 0 ) );
+}
+
+static Function func_CSI_DECSCUSR( CSI, " q", CSI_DECSCUSR, false );
+
+static bool parse_printable_ascii( const std::vector<wchar_t>& chars, std::string& str )
+{
+  str.reserve( chars.size() );
+  for ( wchar_t wide_char : chars ) {
     if ( wide_char < 32 || wide_char > 126 ) {
       return false;
     }
-    osc8_str.append( 1, static_cast<char>( wide_char ) );
+    str.append( 1, static_cast<char>( wide_char ) );
   }
   return true;
+}
+
+static std::string CSI_payload( const std::string& csi )
+{
+  if ( csi.size() >= 2 && csi[0] == '\033' && csi[1] == '[' ) {
+    return csi.substr( 2 );
+  }
+  return csi;
+}
+
+static void DCS_DECRQSS( Framebuffer* fb, Dispatcher* dispatch )
+{
+  std::string request;
+  if ( !parse_printable_ascii( dispatch->get_DCS_string(), request ) ) {
+    dispatch->terminal_to_host.append( "\033P0$r\033\\" );
+    return;
+  }
+
+  std::string response;
+  if ( request == "m" ) {
+    response = CSI_payload( fb->ds.get_renditions().sgr() );
+  } else if ( request == " q" ) {
+    char cursor_style[32];
+    snprintf( cursor_style, sizeof( cursor_style ), "%d q", fb->ds.cursor_style_param() );
+    response = cursor_style;
+  } else if ( request == "r" ) {
+    char margins[32];
+    snprintf( margins,
+              sizeof( margins ),
+              "%d;%dr",
+              fb->ds.get_scrolling_region_top_row() + 1,
+              fb->ds.get_scrolling_region_bottom_row() + 1 );
+    response = margins;
+  } else {
+    dispatch->terminal_to_host.append( "\033P0$r\033\\" );
+    return;
+  }
+
+  dispatch->terminal_to_host.append( "\033P1$r" );
+  dispatch->terminal_to_host.append( response );
+  dispatch->terminal_to_host.append( "\033\\" );
+}
+
+static int hex_value( const char ch )
+{
+  if ( ch >= '0' && ch <= '9' ) {
+    return ch - '0';
+  }
+  if ( ch >= 'a' && ch <= 'f' ) {
+    return ch - 'a' + 10;
+  }
+  if ( ch >= 'A' && ch <= 'F' ) {
+    return ch - 'A' + 10;
+  }
+  return -1;
+}
+
+static bool hex_decode( const std::string& hex, std::string& decoded )
+{
+  if ( hex.size() % 2 != 0 ) {
+    return false;
+  }
+
+  decoded.clear();
+  decoded.reserve( hex.size() / 2 );
+  for ( size_t i = 0; i < hex.size(); i += 2 ) {
+    const int high = hex_value( hex[i] );
+    const int low = hex_value( hex[i + 1] );
+    if ( high < 0 || low < 0 ) {
+      return false;
+    }
+    decoded.push_back( static_cast<char>( ( high << 4 ) | low ) );
+  }
+  return true;
+}
+
+static std::string hex_encode( const std::string& str )
+{
+  static const char hex_digits[] = "0123456789abcdef";
+  std::string ret;
+  ret.reserve( str.size() * 2 );
+  for ( unsigned char ch : str ) {
+    ret.push_back( hex_digits[ch >> 4] );
+    ret.push_back( hex_digits[ch & 0xf] );
+  }
+  return ret;
+}
+
+static bool XTGETTCAP_value( const std::string& name, std::string& value )
+{
+  if ( name == "TN" ) {
+    value = "xterm-256color";
+  } else if ( name == "Co" || name == "colors" ) {
+    value = "256";
+  } else if ( name == "RGB" ) {
+    value = "8/8/8";
+  } else if ( name == "Tc" ) {
+    value = "1";
+  } else if ( name == "Ms" ) {
+    value = "\033]52;%p1%s;%p2%s\007";
+  } else if ( name == "Ss" ) {
+    value = "\033[%p1%d q";
+  } else if ( name == "Se" ) {
+    value = "\033[2 q";
+  } else if ( name == "Cs" ) {
+    value = "\033]12;%p1%s\007";
+  } else if ( name == "Cr" ) {
+    value = "\033]112\007";
+  } else if ( name == "u6" ) {
+    value = "\033[%i%d;%dR";
+  } else if ( name == "u7" ) {
+    value = "\033[6n";
+  } else if ( name == "u8" ) {
+    value = "\033[?62c";
+  } else {
+    return false;
+  }
+  return true;
+}
+
+static void DCS_XTGETTCAP( Dispatcher* dispatch )
+{
+  std::string request;
+  if ( !parse_printable_ascii( dispatch->get_DCS_string(), request ) ) {
+    dispatch->terminal_to_host.append( "\033P0+r\033\\" );
+    return;
+  }
+
+  std::string response;
+  size_t loc = 0;
+  bool first = true;
+  while ( loc <= request.size() ) {
+    const size_t end = request.find( ';', loc );
+    const std::string encoded_name = request.substr( loc, ( end == std::string::npos ? request.size() : end ) - loc );
+    std::string name;
+    std::string value;
+    if ( encoded_name.empty() || !hex_decode( encoded_name, name ) || !XTGETTCAP_value( name, value ) ) {
+      dispatch->terminal_to_host.append( "\033P0+r\033\\" );
+      return;
+    }
+
+    if ( !first ) {
+      response.push_back( ';' );
+    }
+    first = false;
+    response.append( encoded_name );
+    response.push_back( '=' );
+    response.append( hex_encode( value ) );
+
+    if ( end == std::string::npos ) {
+      break;
+    }
+    loc = end + 1;
+  }
+
+  dispatch->terminal_to_host.append( "\033P1+r" );
+  dispatch->terminal_to_host.append( response );
+  dispatch->terminal_to_host.append( "\033\\" );
+}
+
+void Dispatcher::DCS_dispatch( const Parser::Unhook* act __attribute( ( unused ) ), Framebuffer* fb )
+{
+  if ( dispatch_chars == "$q" ) {
+    DCS_DECRQSS( fb, this );
+  } else if ( dispatch_chars == "+q" ) {
+    DCS_XTGETTCAP( this );
+  }
 }
 
 static void OSC_8( const std::string& OSC_string, Framebuffer* fb )
@@ -641,7 +1042,7 @@ static void OSC_8( const std::string& OSC_string, Framebuffer* fb )
   fb->ds.set_hyperlink( Hyperlink( OSC_string.substr( 2, second_semicolon - 2 ), std::move( url ) ) );
 }
 
-static bool OSC_color_query( const std::vector<wchar_t>& OSC_string, Dispatcher* dispatch )
+static bool OSC_color_query( const std::vector<wchar_t>& OSC_string, Dispatcher* dispatch, const Framebuffer* fb )
 {
   long cmd_num = 0;
   size_t loc = 0;
@@ -662,11 +1063,17 @@ static bool OSC_color_query( const std::vector<wchar_t>& OSC_string, Dispatcher*
     return false;
   }
 
-  if ( cmd_num != 10 && cmd_num != 11 ) {
+  if ( cmd_num != 10 && cmd_num != 11 && cmd_num != 12 ) {
     return false;
   }
 
-  const std::string color = dispatch->get_OSC_color_response( cmd_num );
+  std::string color;
+  if ( cmd_num == 12 && fb != NULL ) {
+    color = fb->ds.cursor_color;
+  }
+  if ( color.empty() ) {
+    color = dispatch->get_OSC_color_response( cmd_num );
+  }
   if ( color.empty() ) {
     return true;
   }
@@ -682,8 +1089,23 @@ static bool OSC_color_query( const std::vector<wchar_t>& OSC_string, Dispatcher*
 /* xterm uses an Operating System Command to set the window title */
 void Dispatcher::OSC_dispatch( const Parser::OSC_End* act __attribute( ( unused ) ), Framebuffer* fb )
 {
-  if ( OSC_color_query( OSC_string, this ) ) {
+  if ( OSC_color_query( OSC_string, this, fb ) ) {
     return;
+  }
+
+  std::string OSC_ascii;
+  if ( parse_printable_ascii( OSC_string, OSC_ascii ) ) {
+    if ( OSC_ascii == "112" || OSC_ascii == "112;" ) {
+      fb->ds.cursor_color.clear();
+      return;
+    }
+    if ( OSC_ascii.compare( 0, 3, "12;" ) == 0 ) {
+      const std::string cursor_color = OSC_ascii.substr( 3 );
+      if ( !cursor_color.empty() && cursor_color != "?" ) {
+        fb->ds.cursor_color = cursor_color;
+      }
+      return;
+    }
   }
 
   /* handle osc copy clipboard sequence 52;c; */
@@ -710,7 +1132,7 @@ void Dispatcher::OSC_dispatch( const Parser::OSC_End* act __attribute( ( unused 
     if ( cmd_num == 8 ) {
       // Handle OSC8 hyperlinks separately
       std::string osc_8_str;
-      if ( !Parse_OSC_8( OSC_string, osc_8_str ) ) {
+      if ( !parse_printable_ascii( OSC_string, osc_8_str ) ) {
         //
         return;
       }

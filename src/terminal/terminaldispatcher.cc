@@ -43,6 +43,7 @@
 using namespace Terminal;
 
 static const size_t MAXIMUM_CLIPBOARD_SIZE = 16 * 1024;
+static const size_t MAXIMUM_DCS_SIZE = 16 * 1024;
 static const size_t MAXIMUM_COLOR_RESPONSE_SIZE = 128;
 
 static bool valid_OSC_color_response( const std::string& color )
@@ -62,18 +63,18 @@ static bool valid_OSC_color_response( const std::string& color )
 
 static bool supported_OSC_color_number( const int osc_number )
 {
-  return osc_number == 10 || osc_number == 11;
+  return osc_number == 10 || osc_number == 11 || osc_number == 12;
 }
 
 Dispatcher::Dispatcher()
-  : params(), parsed_params(), parsed( false ), dispatch_chars(), OSC_string(), osc_color_responses(),
-    terminal_to_host()
+  : params(), parsed_params(), parsed( false ), dispatch_chars(), DCS_string(), OSC_string(),
+    osc_color_responses(), terminal_to_host()
 {}
 
 void Dispatcher::newparamchar( const Parser::Param* act )
 {
   assert( act->char_present );
-  assert( ( act->ch == ';' ) || ( ( act->ch >= '0' ) && ( act->ch <= '9' ) ) );
+  assert( ( act->ch == ':' ) || ( act->ch == ';' ) || ( ( act->ch >= '0' ) && ( act->ch <= '9' ) ) );
   if ( params.length() < 100 ) {
     /* enough for 16 five-char params plus 15 semicolons */
     params.push_back( act->ch );
@@ -94,6 +95,7 @@ void Dispatcher::clear( const Parser::Clear* act __attribute( ( unused ) ) )
 {
   params.clear();
   dispatch_chars.clear();
+  DCS_string.clear();
   parsed = false;
 }
 
@@ -116,7 +118,7 @@ void Dispatcher::parse_params( void )
     errno = 0;
     char* endptr;
     long val = strtol( segment_begin, &endptr, 10 );
-    if ( endptr == segment_begin ) {
+    if ( endptr == segment_begin || endptr != segment_end ) {
       val = -1;
     }
 
@@ -125,7 +127,7 @@ void Dispatcher::parse_params( void )
       errno = 0;
     }
 
-    if ( errno == 0 || segment_begin == endptr ) {
+    if ( errno == 0 ) {
       parsed_params.push_back( val );
     }
 
@@ -136,7 +138,7 @@ void Dispatcher::parse_params( void )
   errno = 0;
   char* endptr;
   long val = strtol( segment_begin, &endptr, 10 );
-  if ( endptr == segment_begin ) {
+  if ( endptr == segment_begin || *endptr != '\0' ) {
     val = -1;
   }
 
@@ -145,7 +147,7 @@ void Dispatcher::parse_params( void )
     errno = 0;
   }
 
-  if ( errno == 0 || segment_begin == endptr ) {
+  if ( errno == 0 ) {
     parsed_params.push_back( val );
   }
 
@@ -264,6 +266,13 @@ void Dispatcher::dispatch( Function_Type type, const Parser::Action* act, Frameb
   }
 
   std::string key = dispatch_chars;
+  if ( type == CSI && key != "m" && params.find( ':' ) != std::string::npos ) {
+    /* Subparameters are currently supported only for SGR.  Preserve the
+       previous behavior for other colon-parameter CSI sequences by ignoring
+       them instead of treating the subparameter as a defaulted parameter. */
+    fb->ds.next_print_will_wrap = false;
+    return;
+  }
   if ( type == CONTROL ) {
     assert( act->ch <= 255 );
     char ctrlstr[2] = { (char)act->ch, 0 };
@@ -282,6 +291,24 @@ void Dispatcher::dispatch( Function_Type type, const Parser::Action* act, Frameb
   i->second.function( fb, this );
 }
 
+void Dispatcher::DCS_hook( const Parser::Hook* act )
+{
+  assert( act->char_present );
+  Parser::Collect act2;
+  act2.char_present = true;
+  act2.ch = act->ch;
+  collect( &act2 );
+  DCS_string.clear();
+}
+
+void Dispatcher::DCS_put( const Parser::Put* act )
+{
+  assert( act->char_present );
+  if ( DCS_string.size() < MAXIMUM_DCS_SIZE ) {
+    DCS_string.push_back( act->ch );
+  }
+}
+
 void Dispatcher::OSC_put( const Parser::OSC_Put* act )
 {
   assert( act->char_present );
@@ -298,6 +325,7 @@ void Dispatcher::OSC_start( const Parser::OSC_Start* act __attribute( ( unused )
 bool Dispatcher::operator==( const Dispatcher& x ) const
 {
   return ( params == x.params ) && ( parsed_params == x.parsed_params ) && ( parsed == x.parsed )
-         && ( dispatch_chars == x.dispatch_chars ) && ( OSC_string == x.OSC_string )
-         && ( osc_color_responses == x.osc_color_responses ) && ( terminal_to_host == x.terminal_to_host );
+         && ( dispatch_chars == x.dispatch_chars ) && ( DCS_string == x.DCS_string )
+         && ( OSC_string == x.OSC_string ) && ( osc_color_responses == x.osc_color_responses )
+         && ( terminal_to_host == x.terminal_to_host );
 }

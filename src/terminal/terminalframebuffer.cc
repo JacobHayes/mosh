@@ -67,7 +67,8 @@ DrawState::DrawState( int s_width, int s_height )
     combining_char_row( 0 ), default_tabs( true ), tabs( s_width ), scrolling_region_top_row( 0 ),
     scrolling_region_bottom_row( height - 1 ), renditions( 0 ), hyperlink(), save(), next_print_will_wrap( false ),
     origin_mode( false ), auto_wrap_mode( true ), insert_mode( false ), cursor_visible( true ),
-    reverse_video( false ), bracketed_paste( false ), mouse_reporting_mode( MOUSE_REPORTING_NONE ),
+    cursor_blink( true ), cursor_shape( CURSOR_SHAPE_DEFAULT ), cursor_color(), reverse_video( false ),
+    bracketed_paste( false ), mouse_reporting_mode( MOUSE_REPORTING_NONE ),
     mouse_focus_event( false ), mouse_alternate_scroll( false ), mouse_encoding_mode( MOUSE_ENCODING_DEFAULT ),
     application_mode_cursor_keys( false )
 {
@@ -491,6 +492,8 @@ void Framebuffer::soft_reset( void )
   ds.insert_mode = false;
   ds.origin_mode = false;
   ds.cursor_visible = true; /* per xterm and gnome-terminal */
+  ds.cursor_blink = true;
+  ds.cursor_shape = DrawState::CURSOR_SHAPE_DEFAULT;
   ds.application_mode_cursor_keys = false;
   ds.set_scrolling_region( 0, ds.get_height() - 1 );
   ds.add_rendition( 0 );
@@ -669,6 +672,57 @@ void Framebuffer::reflow( int s_width, int s_height )
   history_truncate_count = history->get_truncate_count();
 }
 
+int DrawState::cursor_style_param( void ) const
+{
+  switch ( cursor_shape ) {
+    case CURSOR_SHAPE_UNDERLINE:
+      return cursor_blink ? 3 : 4;
+    case CURSOR_SHAPE_BAR:
+      return cursor_blink ? 5 : 6;
+    case CURSOR_SHAPE_BLOCK:
+      return cursor_blink ? 1 : 2;
+    case CURSOR_SHAPE_DEFAULT:
+    default:
+      return cursor_blink ? 0 : 2;
+  }
+}
+
+void DrawState::set_cursor_style( int param )
+{
+  switch ( param ) {
+    case 0:
+      cursor_shape = CURSOR_SHAPE_DEFAULT;
+      cursor_blink = true;
+      break;
+    case 1:
+      cursor_shape = CURSOR_SHAPE_BLOCK;
+      cursor_blink = true;
+      break;
+    case 2:
+      cursor_shape = CURSOR_SHAPE_BLOCK;
+      cursor_blink = false;
+      break;
+    case 3:
+      cursor_shape = CURSOR_SHAPE_UNDERLINE;
+      cursor_blink = true;
+      break;
+    case 4:
+      cursor_shape = CURSOR_SHAPE_UNDERLINE;
+      cursor_blink = false;
+      break;
+    case 5:
+      cursor_shape = CURSOR_SHAPE_BAR;
+      cursor_blink = true;
+      break;
+    case 6:
+      cursor_shape = CURSOR_SHAPE_BAR;
+      cursor_blink = false;
+      break;
+    default:
+      break;
+  }
+}
+
 void DrawState::resize( int s_width, int s_height )
 {
   if ( ( width != s_width ) || ( height != s_height ) ) {
@@ -698,7 +752,8 @@ void DrawState::resize( int s_width, int s_height )
 }
 
 Renditions::Renditions( color_type s_background )
-  : foreground_color( 0 ), background_color( s_background ), attributes( 0 )
+  : foreground_color( 0 ), background_color( s_background ), underline_color( 0 ), attributes( 0 ),
+    underline_style( UNDERLINE_NONE )
 {}
 
 /* This routine cannot be used to set a color beyond the 16-color set. */
@@ -706,7 +761,7 @@ void Renditions::set_rendition( color_type num )
 {
   if ( num == 0 ) {
     clear_attributes();
-    foreground_color = background_color = 0;
+    foreground_color = background_color = underline_color = 0;
     return;
   }
 
@@ -715,6 +770,9 @@ void Renditions::set_rendition( color_type num )
     return;
   } else if ( num == 49 ) {
     background_color = 0;
+    return;
+  } else if ( num == 59 ) {
+    underline_color = 0;
     return;
   }
 
@@ -732,31 +790,55 @@ void Renditions::set_rendition( color_type num )
     return;
   }
 
-  bool value = num < 9;
   switch ( num ) {
     case 1:
+      set_attribute( bold, true );
+      break;
+    case 2:
+      set_attribute( faint, true );
+      break;
     case 22:
-      set_attribute( bold, value );
+      set_attribute( bold, false );
+      set_attribute( faint, false );
       break;
     case 3:
+      set_attribute( italic, true );
+      break;
     case 23:
-      set_attribute( italic, value );
+      set_attribute( italic, false );
       break;
     case 4:
+      set_underline_style( UNDERLINE_SINGLE );
+      break;
+    case 21:
+      set_underline_style( UNDERLINE_DOUBLE );
+      break;
     case 24:
-      set_attribute( underlined, value );
+      set_underline_style( UNDERLINE_NONE );
       break;
     case 5:
+      set_attribute( blink, true );
+      break;
     case 25:
-      set_attribute( blink, value );
+      set_attribute( blink, false );
       break;
     case 7:
+      set_attribute( inverse, true );
+      break;
     case 27:
-      set_attribute( inverse, value );
+      set_attribute( inverse, false );
       break;
     case 8:
+      set_attribute( invisible, true );
+      break;
     case 28:
-      set_attribute( invisible, value );
+      set_attribute( invisible, false );
+      break;
+    case 9:
+      set_attribute( strikethrough, true );
+      break;
+    case 29:
+      set_attribute( strikethrough, false );
       break;
     default:
       break; /* ignore unknown rendition */
@@ -781,6 +863,25 @@ void Renditions::set_background_color( int num )
   }
 }
 
+void Renditions::set_underline_color( int num )
+{
+  if ( ( 0 <= num ) && ( num <= 255 ) ) {
+    underline_color = 30 + num;
+  } else if ( is_true_color( num ) ) {
+    underline_color = num;
+  }
+}
+
+void Renditions::set_underline_style( int style )
+{
+  if ( style < UNDERLINE_NONE || style > UNDERLINE_DASHED ) {
+    return;
+  }
+
+  underline_style = style;
+  set_attribute( underlined, underline_style != UNDERLINE_NONE );
+}
+
 std::string Renditions::sgr( void ) const
 {
   std::string ret;
@@ -789,22 +890,28 @@ std::string Renditions::sgr( void ) const
   ret.append( "\033[0" );
   if ( get_attribute( bold ) )
     ret.append( ";1" );
+  if ( get_attribute( faint ) )
+    ret.append( ";2" );
   if ( get_attribute( italic ) )
     ret.append( ";3" );
-  if ( get_attribute( underlined ) )
-    ret.append( ";4" );
+  if ( get_attribute( underlined ) ) {
+    if ( underline_style == UNDERLINE_SINGLE ) {
+      ret.append( ";4" );
+    } else {
+      snprintf( col, sizeof( col ), ";4:%d", underline_style );
+      ret.append( col );
+    }
+  }
   if ( get_attribute( blink ) )
     ret.append( ";5" );
   if ( get_attribute( inverse ) )
     ret.append( ";7" );
   if ( get_attribute( invisible ) )
     ret.append( ";8" );
+  if ( get_attribute( strikethrough ) )
+    ret.append( ";9" );
 
   if ( foreground_color ) {
-    // Since foreground_color is a 25-bit field, it is promoted to an int when
-    // manipulated. (See [conv.prom] in various C++ standards, e.g.,
-    // https://timsong-cpp.github.io/cppwp/n4659/conv.prom#5.) The correct
-    // printf format specifier is thus %d.
     if ( is_true_color( foreground_color ) ) {
       snprintf( col,
                 sizeof( col ),
@@ -815,17 +922,12 @@ std::string Renditions::sgr( void ) const
     } else if ( foreground_color > 37 ) { /* use 256-color set */
       snprintf( col, sizeof( col ), ";38;5;%d", foreground_color - 30 );
     } else { /* ANSI foreground color */
-      // Unfortunately, some versions of GCC (notably including GCC 9.3) give
-      // -Wformat warnings when relying on [conv.prom] to promote
-      // foreground_color in calls to printf. Explicitly promote it to silence
-      // the warning.
       int fg = foreground_color;
       snprintf( col, sizeof( col ), ";%d", fg );
     }
     ret.append( col );
   }
   if ( background_color ) {
-    // See comment above about bit-field promotion; it applies here as well.
     if ( is_true_color( background_color ) ) {
       snprintf( col,
                 sizeof( col ),
@@ -836,9 +938,21 @@ std::string Renditions::sgr( void ) const
     } else if ( background_color > 47 ) { /* use 256-color set */
       snprintf( col, sizeof( col ), ";48;5;%d", background_color - 40 );
     } else { /* ANSI background color */
-      // See comment above about explicit promotion; it applies here as well.
       int bg = background_color;
       snprintf( col, sizeof( col ), ";%d", bg );
+    }
+    ret.append( col );
+  }
+  if ( underline_color ) {
+    if ( is_true_color( underline_color ) ) {
+      snprintf( col,
+                sizeof( col ),
+                ";58;2;%d;%d;%d",
+                ( underline_color >> 16 ) & 0xff,
+                ( underline_color >> 8 ) & 0xff,
+                underline_color & 0xff );
+    } else {
+      snprintf( col, sizeof( col ), ";58;5;%d", underline_color - 30 );
     }
     ret.append( col );
   }

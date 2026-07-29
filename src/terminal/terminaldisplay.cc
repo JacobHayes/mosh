@@ -52,7 +52,7 @@ std::string Display::open() const
 
 std::string Display::close() const
 {
-  return std::string( "\033[?1l\033[0m\033[?25h"
+  return std::string( "\033[?1l\033[0m\033[?25h\033[0 q\033]112\007"
                       "\033[?1003l\033[?1002l\033[?1001l\033[?1000l"
                       "\033[?1015l\033[?1006l\033[?1005l" )
          + std::string( rmcup ? rmcup : "" );
@@ -276,6 +276,27 @@ std::string Display::new_frame( bool initialized, const Framebuffer& last, const
       frame.append( "\033[?25h" );
     } else {
       frame.append( "\033[?25l" );
+    }
+  }
+
+  /* has cursor style changed? */
+  if ( ( ( !initialized )
+         && ( f.ds.cursor_shape != DrawState::CURSOR_SHAPE_DEFAULT || !f.ds.cursor_blink ) )
+       || ( f.ds.cursor_shape != frame.last_frame.ds.cursor_shape )
+       || ( f.ds.cursor_blink != frame.last_frame.ds.cursor_blink ) ) {
+    snprintf( tmp, sizeof( tmp ), "\033[%d q", f.ds.cursor_style_param() );
+    frame.append( tmp );
+  }
+
+  /* has cursor color changed? */
+  if ( ( ( !initialized ) && !f.ds.cursor_color.empty() )
+       || ( f.ds.cursor_color != frame.last_frame.ds.cursor_color ) ) {
+    if ( f.ds.cursor_color.empty() ) {
+      frame.append( "\033]112\007" );
+    } else {
+      frame.append( "\033]12;" );
+      frame.append_string( f.ds.cursor_color );
+      frame.append( '\007' );
     }
   }
 
