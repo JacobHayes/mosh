@@ -81,6 +81,7 @@ public:
 
   const Framebuffer& get_fb( void ) const { return fb; }
   Framebuffer& get_mutable_fb( void ) { return fb; }
+  void set_OSC_color_response( int osc_number, const std::string& color );
 
   bool operator==( Emulator const& x ) const;
 };

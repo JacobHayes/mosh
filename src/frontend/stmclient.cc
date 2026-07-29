@@ -32,17 +32,22 @@
 
 #include "src/include/config.h"
 
+#include <algorithm>
 #include <cerrno>
+#include <climits>
 #include <clocale>
+#include <cstdint>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <string>
 
 #include <err.h>
 #include <pwd.h>
 #include <sys/ioctl.h>
+#include <sys/select.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -65,6 +70,288 @@
 
 #include "src/network/networktransport-impl.h"
 
+static const int TERMINAL_COLOR_QUERY_TIMEOUT = 200;
+/* There is no portable terminal-side notification for default-color changes, so poll cheaply. */
+static const int TERMINAL_COLOR_QUERY_INTERVAL = 1000;
+static const int TERMINAL_COLOR_QUERY_POLL = 25;
+static const size_t MAXIMUM_TERMINAL_COLOR_RESPONSE_SIZE = 128;
+
+static bool valid_terminal_color_response( const std::string& color )
+{
+  if ( color.empty() || color == "?" || color.size() > MAXIMUM_TERMINAL_COLOR_RESPONSE_SIZE ) {
+    return false;
+  }
+
+  for ( unsigned char ch : color ) {
+    if ( ch < 0x20 || ch > 0x7e ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+static bool parse_OSC_number( const std::string& str, const size_t begin, const size_t end, int& osc_number )
+{
+  if ( begin == end ) {
+    return false;
+  }
+
+  int ret = 0;
+  for ( size_t loc = begin; loc < end; loc++ ) {
+    if ( str[loc] < '0' || str[loc] > '9' ) {
+      return false;
+    }
+    ret = ret * 10 + str[loc] - '0';
+    if ( ret > 65535 ) {
+      return false;
+    }
+  }
+
+  osc_number = ret;
+  return true;
+}
+
+static bool could_be_terminal_color_response_prefix( const std::string& input, const size_t content_start )
+{
+  const std::string content = input.substr( content_start );
+  const std::string foreground_prefix = "10;";
+  const std::string background_prefix = "11;";
+
+  return ( foreground_prefix.compare( 0, content.size(), content ) == 0 )
+         || ( background_prefix.compare( 0, content.size(), content ) == 0 )
+         || ( content.compare( 0, foreground_prefix.size(), foreground_prefix ) == 0 )
+         || ( content.compare( 0, background_prefix.size(), background_prefix ) == 0 );
+}
+
+void STMClient::request_local_terminal_colors( void )
+{
+  static const char color_queries[] = "\033]10;?\033\\\033]11;?\033\\";
+
+  freeze_timestamp();
+  const uint64_t now = timestamp();
+  last_terminal_color_query = now;
+  next_terminal_color_query = now + TERMINAL_COLOR_QUERY_INTERVAL;
+  terminal_color_query_in_flight = false;
+  terminal_color_query_foreground_seen = false;
+  terminal_color_query_background_seen = false;
+  local_terminal_color_response_buffer.clear();
+
+  if ( swrite( STDOUT_FILENO, color_queries, strlen( color_queries ) ) < 0 ) {
+    return;
+  }
+
+  terminal_color_query_in_flight = true;
+}
+
+bool STMClient::collect_local_terminal_color_responses( std::string& input, const bool keep_incomplete_OSC )
+{
+  bool changed = false;
+  std::string keep;
+  size_t loc = 0;
+
+  if ( !local_terminal_color_response_buffer.empty() ) {
+    input.insert( 0, local_terminal_color_response_buffer );
+    local_terminal_color_response_buffer.clear();
+  }
+
+  while ( loc < input.size() ) {
+    if ( input[loc] == '\033' && loc + 1 < input.size() && input[loc + 1] == ']' ) {
+      const size_t content_start = loc + 2;
+      size_t content_end = std::string::npos;
+      size_t terminator_size = 0;
+
+      for ( size_t end = content_start; end < input.size(); end++ ) {
+        if ( input[end] == '\007' || static_cast<unsigned char>( input[end] ) == 0x9c ) {
+          content_end = end;
+          terminator_size = 1;
+          break;
+        }
+        if ( input[end] == '\033' && end + 1 < input.size() && input[end + 1] == '\\' ) {
+          content_end = end;
+          terminator_size = 2;
+          break;
+        }
+      }
+
+      if ( content_end == std::string::npos ) {
+        if ( keep_incomplete_OSC && could_be_terminal_color_response_prefix( input, content_start ) ) {
+          local_terminal_color_response_buffer.assign( input, loc, input.size() - loc );
+        } else {
+          keep.append( input, loc, input.size() - loc );
+        }
+        break;
+      }
+
+      bool consumed = false;
+      const std::string content = input.substr( content_start, content_end - content_start );
+      const size_t semicolon = content.find( ';' );
+      int osc_number = 0;
+
+      if ( semicolon != std::string::npos && parse_OSC_number( content, 0, semicolon, osc_number )
+           && ( osc_number == 10 || osc_number == 11 ) ) {
+        const std::string color = content.substr( semicolon + 1 );
+        consumed = true;
+
+        if ( terminal_color_query_in_flight ) {
+          if ( osc_number == 10 ) {
+            terminal_color_query_foreground_seen = true;
+          } else {
+            terminal_color_query_background_seen = true;
+          }
+        }
+
+        if ( valid_terminal_color_response( color ) ) {
+          if ( osc_number == 10 && local_terminal_foreground_color != color ) {
+            local_terminal_foreground_color = color;
+            changed = true;
+          } else if ( osc_number == 11 && local_terminal_background_color != color ) {
+            local_terminal_background_color = color;
+            changed = true;
+          }
+        }
+      }
+
+      if ( !consumed ) {
+        keep.append( input, loc, content_end + terminator_size - loc );
+      }
+      loc = content_end + terminator_size;
+    } else {
+      keep.push_back( input[loc] );
+      loc++;
+    }
+  }
+
+  input.swap( keep );
+
+  if ( terminal_color_query_in_flight && terminal_color_query_foreground_seen
+       && terminal_color_query_background_seen ) {
+    terminal_color_query_in_flight = false;
+    local_terminal_color_response_buffer.clear();
+  }
+
+  return changed;
+}
+
+void STMClient::send_local_terminal_colors( void )
+{
+  if ( !network || network->shutdown_in_progress() ) {
+    return;
+  }
+
+  if ( !local_terminal_foreground_color.empty()
+       && local_terminal_foreground_color != sent_terminal_foreground_color ) {
+    network->get_current_state().push_back_terminal_color( 10, local_terminal_foreground_color );
+    sent_terminal_foreground_color = local_terminal_foreground_color;
+  }
+  if ( !local_terminal_background_color.empty()
+       && local_terminal_background_color != sent_terminal_background_color ) {
+    network->get_current_state().push_back_terminal_color( 11, local_terminal_background_color );
+    sent_terminal_background_color = local_terminal_background_color;
+  }
+}
+
+void STMClient::query_local_terminal_colors( void )
+{
+  request_local_terminal_colors();
+  if ( !terminal_color_query_in_flight ) {
+    return;
+  }
+
+  std::string input;
+  const uint64_t deadline = last_terminal_color_query + TERMINAL_COLOR_QUERY_TIMEOUT;
+
+  while ( terminal_color_query_in_flight ) {
+    freeze_timestamp();
+    const uint64_t now = timestamp();
+    if ( now >= deadline ) {
+      break;
+    }
+    const uint64_t remaining = deadline - now;
+    const int wait_time = static_cast<int>( std::min<uint64_t>( TERMINAL_COLOR_QUERY_POLL, remaining ) );
+    struct timeval tv;
+    tv.tv_sec = wait_time / 1000;
+    tv.tv_usec = ( wait_time % 1000 ) * 1000;
+
+    fd_set readfds;
+    FD_ZERO( &readfds );
+    FD_SET( STDIN_FILENO, &readfds );
+
+    int ret = select( STDIN_FILENO + 1, &readfds, NULL, NULL, &tv );
+    freeze_timestamp();
+    if ( ret < 0 ) {
+      if ( errno == EINTR ) {
+        continue;
+      }
+      break;
+    }
+    if ( ret == 0 || !FD_ISSET( STDIN_FILENO, &readfds ) ) {
+      continue;
+    }
+
+    char buf[1024];
+    ssize_t bytes_read = read( STDIN_FILENO, buf, sizeof buf );
+    if ( bytes_read < 0 ) {
+      if ( errno == EINTR || errno == EAGAIN ) {
+        continue;
+      }
+      break;
+    }
+    if ( bytes_read == 0 ) {
+      break;
+    }
+
+    input.append( buf, bytes_read );
+    if ( collect_local_terminal_color_responses( input, true ) ) {
+      send_local_terminal_colors();
+    }
+  }
+
+  terminal_color_query_in_flight = false;
+  terminal_color_query_foreground_seen = false;
+  terminal_color_query_background_seen = false;
+  local_terminal_color_response_buffer.clear();
+
+  if ( !input.empty() ) {
+    pending_input.append( input );
+  }
+}
+
+void STMClient::maybe_query_local_terminal_colors( void )
+{
+  freeze_timestamp();
+  const uint64_t now = timestamp();
+
+  if ( terminal_color_query_in_flight
+       && ( ( !local_terminal_color_response_buffer.empty()
+              && now - last_terminal_color_query >= TERMINAL_COLOR_QUERY_TIMEOUT )
+            || now >= next_terminal_color_query ) ) {
+    terminal_color_query_in_flight = false;
+    terminal_color_query_foreground_seen = false;
+    terminal_color_query_background_seen = false;
+    local_terminal_color_response_buffer.clear();
+  }
+
+  if ( !terminal_color_query_in_flight && now >= next_terminal_color_query ) {
+    request_local_terminal_colors();
+  }
+}
+
+int STMClient::local_terminal_color_wait_time( void ) const
+{
+  const uint64_t now = timestamp();
+  const uint64_t target = ( terminal_color_query_in_flight && !local_terminal_color_response_buffer.empty() )
+                            ? last_terminal_color_query + TERMINAL_COLOR_QUERY_TIMEOUT
+                            : next_terminal_color_query;
+
+  if ( target <= now ) {
+    return 0;
+  }
+
+  const uint64_t wait_time = target - now;
+  return wait_time > static_cast<uint64_t>( INT_MAX ) ? INT_MAX : static_cast<int>( wait_time );
+}
+
 void STMClient::resume( void )
 {
   /* Restore termios state */
@@ -83,6 +370,12 @@ void STMClient::resume( void )
     /* Put terminal in application-cursor-key mode */
     swrite( STDOUT_FILENO, display.open().c_str() );
   }
+
+  terminal_color_query_in_flight = false;
+  terminal_color_query_foreground_seen = false;
+  terminal_color_query_background_seen = false;
+  local_terminal_color_response_buffer.clear();
+  next_terminal_color_query = 0;
 
   /* Flag that outer terminal state is unknown */
   repaint_requested = true;
@@ -127,6 +420,8 @@ void STMClient::init( void )
     perror( "tcsetattr" );
     exit( 1 );
   }
+
+  query_local_terminal_colors();
 
   /* Put terminal in application-cursor-key mode */
   swrite( STDOUT_FILENO, display.open().c_str() );
@@ -292,6 +587,8 @@ void STMClient::main_init( void )
   if ( scrollback_wanted ) {
     network->get_current_state().push_back_feature( Network::FEATURE_SCROLLBACK | Network::FEATURE_ALTSCREEN );
   }
+
+  send_local_terminal_colors();
 
   /* tell server the size of the terminal */
   network->get_current_state().push_back( Parser::Resize( window_size.ws_col, window_size.ws_row ) );
@@ -507,6 +804,19 @@ bool STMClient::process_user_input( int fd )
     return false;
   }
 
+  std::string input( buf, bytes_read );
+  if ( collect_local_terminal_color_responses( input, terminal_color_query_in_flight ) ) {
+    send_local_terminal_colors();
+  }
+  if ( input.empty() ) {
+    return true;
+  }
+
+  return process_user_bytes( input.data(), input.size() );
+}
+
+bool STMClient::process_user_bytes( const char* buf, ssize_t bytes_read )
+{
   NetworkType& net = *network;
 
   if ( net.shutdown_in_progress() ) {
@@ -613,6 +923,8 @@ bool STMClient::process_resize( void )
   /* tell prediction engine */
   overlays.get_prediction_engine().reset();
 
+  next_terminal_color_query = 0;
+
   /* the host terminal reshuffles rows between viewport and scrollback
      on its own during a resize; rebuild once the dust settles */
   if ( scrollback_active ) {
@@ -637,12 +949,21 @@ bool STMClient::main( void )
   }
 #endif
 
+  if ( !pending_input.empty() ) {
+    std::string input = pending_input;
+    pending_input.clear();
+    if ( !process_user_bytes( input.data(), input.size() ) ) {
+      return false;
+    }
+  }
+
   /* prepare to poll for events */
   Select& sel = Select::get_instance();
 
   while ( 1 ) {
     try {
       output_new_frame();
+      maybe_query_local_terminal_colors();
 
       int wait_time = std::min( network->wait_time(), overlays.wait_time() );
 
@@ -655,6 +976,8 @@ bool STMClient::main( void )
       if ( scrollback_dirty ) {
         wait_time = std::min( 100, wait_time );
       }
+
+      wait_time = std::min( wait_time, local_terminal_color_wait_time() );
 
       /* poll for events */
       /* network->fd() can in theory change over time */

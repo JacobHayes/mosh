@@ -93,6 +93,12 @@ std::string UserStream::diff_from( const UserStream& existing ) const
         Instruction* new_inst = output.add_instruction();
         new_inst->MutableExtension( feature )->set_features( my_it->features );
       } break;
+      case TerminalColorType: {
+        Instruction* new_inst = output.add_instruction();
+        TerminalColor* color = new_inst->MutableExtension( terminal_color );
+        color->set_osc( my_it->terminal_color_osc );
+        color->set_color( my_it->terminal_color );
+      } break;
       default:
         assert( !"unexpected event type" );
         break;
@@ -120,6 +126,9 @@ void UserStream::apply_string( const std::string& diff )
                                             input.instruction( i ).GetExtension( resize ).height() ) ) );
     } else if ( input.instruction( i ).HasExtension( feature ) ) {
       actions.push_back( UserEvent( input.instruction( i ).GetExtension( feature ).features() ) );
+    } else if ( input.instruction( i ).HasExtension( terminal_color ) ) {
+      const TerminalColor& color = input.instruction( i ).GetExtension( terminal_color );
+      actions.push_back( UserEvent( color.osc(), color.color() ) );
     }
   }
 }
@@ -133,6 +142,7 @@ const Parser::Action& UserStream::get_action( unsigned int i ) const
     case ResizeType:
       return actions[i].resize;
     case FeatureType:
+    case TerminalColorType:
       /* not a terminal action; consumers inspect get_event() instead */
       return nothing;
     default:

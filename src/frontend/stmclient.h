@@ -38,6 +38,7 @@
 #include <string>
 
 #include <sys/ioctl.h>
+#include <sys/types.h>
 #include <termios.h>
 
 #include "src/frontend/terminaloverlay.h"
@@ -89,9 +90,28 @@ private:
   uint64_t last_scrollback_activity; /* timestamp for replay debounce */
   bool last_alt_active;              /* to notice alternate-screen exits */
 
+  std::string local_terminal_foreground_color;
+  std::string local_terminal_background_color;
+  std::string sent_terminal_foreground_color;
+  std::string sent_terminal_background_color;
+  std::string local_terminal_color_response_buffer;
+  std::string pending_input;
+  uint64_t last_terminal_color_query;
+  uint64_t next_terminal_color_query;
+  bool terminal_color_query_in_flight;
+  bool terminal_color_query_foreground_seen;
+  bool terminal_color_query_background_seen;
+
+  void request_local_terminal_colors( void );
+  void query_local_terminal_colors( void );
+  void maybe_query_local_terminal_colors( void );
+  int local_terminal_color_wait_time( void ) const;
+  bool collect_local_terminal_color_responses( std::string& input, bool keep_incomplete_OSC );
+  void send_local_terminal_colors( void );
   void main_init( void );
   void process_network_input( void );
   bool process_user_input( int fd );
+  bool process_user_bytes( const char* buf, ssize_t bytes_read );
   bool process_resize( void );
 
   void output_new_frame( void );
@@ -123,7 +143,11 @@ public:
       repaint_requested( false ), lf_entered( false ), quit_sequence_started( false ), clean_shutdown( false ),
       verbose( s_verbose ), scrollback_wanted( true ), scrollback_active( false ), scrollback_dirty( false ),
       emitted_history_rows( 0 ), emitted_clear_count( 0 ), emitted_truncate_count( 0 ),
-      last_seen_history_rows( 0 ), last_scrollback_activity( 0 ), last_alt_active( false )
+      last_seen_history_rows( 0 ), last_scrollback_activity( 0 ), last_alt_active( false ),
+      local_terminal_foreground_color(), local_terminal_background_color(), sent_terminal_foreground_color(),
+      sent_terminal_background_color(), local_terminal_color_response_buffer(), pending_input(),
+      last_terminal_color_query( 0 ), next_terminal_color_query( 0 ), terminal_color_query_in_flight( false ),
+      terminal_color_query_foreground_seen( false ), terminal_color_query_background_seen( false )
   {
     if ( getenv( "MOSH_NO_SCROLLBACK" ) ) {
       scrollback_wanted = false;

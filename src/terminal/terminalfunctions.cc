@@ -641,9 +641,51 @@ static void OSC_8( const std::string& OSC_string, Framebuffer* fb )
   fb->ds.set_hyperlink( Hyperlink( OSC_string.substr( 2, second_semicolon - 2 ), std::move( url ) ) );
 }
 
+static bool OSC_color_query( const std::vector<wchar_t>& OSC_string, Dispatcher* dispatch )
+{
+  long cmd_num = 0;
+  size_t loc = 0;
+
+  while ( loc < OSC_string.size() && OSC_string[loc] >= L'0' && OSC_string[loc] <= L'9' ) {
+    cmd_num = cmd_num * 10 + ( OSC_string[loc] - L'0' );
+    if ( cmd_num > Dispatcher::PARAM_MAX ) {
+      return false;
+    }
+    loc++;
+  }
+
+  if ( loc == 0 || loc >= OSC_string.size() || OSC_string[loc] != L';' ) {
+    return false;
+  }
+
+  if ( loc + 2 != OSC_string.size() || OSC_string[loc + 1] != L'?' ) {
+    return false;
+  }
+
+  if ( cmd_num != 10 && cmd_num != 11 ) {
+    return false;
+  }
+
+  const std::string color = dispatch->get_OSC_color_response( cmd_num );
+  if ( color.empty() ) {
+    return true;
+  }
+
+  char response[16];
+  snprintf( response, sizeof response, "\033]%ld;", cmd_num );
+  dispatch->terminal_to_host.append( response );
+  dispatch->terminal_to_host.append( color );
+  dispatch->terminal_to_host.append( "\033\\" );
+  return true;
+}
+
 /* xterm uses an Operating System Command to set the window title */
 void Dispatcher::OSC_dispatch( const Parser::OSC_End* act __attribute( ( unused ) ), Framebuffer* fb )
 {
+  if ( OSC_color_query( OSC_string, this ) ) {
+    return;
+  }
+
   /* handle osc copy clipboard sequence 52;c; */
   if ( OSC_string.size() >= 5 && OSC_string[0] == L'5' && OSC_string[1] == L'2' && OSC_string[2] == L';'
        && OSC_string[3] == L'c' && OSC_string[4] == L';' ) {

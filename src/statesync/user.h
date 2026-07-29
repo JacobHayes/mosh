@@ -46,7 +46,8 @@ enum UserEventType
 {
   UserByteType = 0,
   ResizeType = 1,
-  FeatureType = 2
+  FeatureType = 2,
+  TerminalColorType = 3
 };
 
 /* feature bits for FeatureType events */
@@ -63,14 +64,23 @@ public:
   Parser::UserByte userbyte;
   Parser::Resize resize;
   uint32_t features;
+  int terminal_color_osc;
+  std::string terminal_color;
 
   UserEvent( const Parser::UserByte& s_userbyte )
-    : type( UserByteType ), userbyte( s_userbyte ), resize( -1, -1 ), features( 0 )
+    : type( UserByteType ), userbyte( s_userbyte ), resize( -1, -1 ), features( 0 ), terminal_color_osc( 0 ),
+      terminal_color()
   {}
-  UserEvent( const Parser::Resize& s_resize ) : type( ResizeType ), userbyte( 0 ), resize( s_resize ), features( 0 )
+  UserEvent( const Parser::Resize& s_resize )
+    : type( ResizeType ), userbyte( 0 ), resize( s_resize ), features( 0 ), terminal_color_osc( 0 ), terminal_color()
   {}
   explicit UserEvent( uint32_t s_features )
-    : type( FeatureType ), userbyte( 0 ), resize( -1, -1 ), features( s_features )
+    : type( FeatureType ), userbyte( 0 ), resize( -1, -1 ), features( s_features ), terminal_color_osc( 0 ),
+      terminal_color()
+  {}
+  UserEvent( const int s_terminal_color_osc, const std::string& s_terminal_color )
+    : type( TerminalColorType ), userbyte( 0 ), resize( -1, -1 ), features( 0 ),
+      terminal_color_osc( s_terminal_color_osc ), terminal_color( s_terminal_color )
   {}
 
 private:
@@ -79,8 +89,8 @@ private:
 public:
   bool operator==( const UserEvent& x ) const
   {
-    return ( type == x.type ) && ( userbyte == x.userbyte ) && ( resize == x.resize )
-           && ( features == x.features );
+    return ( type == x.type ) && ( userbyte == x.userbyte ) && ( resize == x.resize ) && ( features == x.features )
+           && ( terminal_color_osc == x.terminal_color_osc ) && ( terminal_color == x.terminal_color );
   }
 };
 
@@ -95,6 +105,10 @@ public:
   void push_back( const Parser::UserByte& s_userbyte ) { actions.push_back( UserEvent( s_userbyte ) ); }
   void push_back( const Parser::Resize& s_resize ) { actions.push_back( UserEvent( s_resize ) ); }
   void push_back_feature( uint32_t features ) { actions.push_back( UserEvent( features ) ); }
+  void push_back_terminal_color( int osc_number, const std::string& color )
+  {
+    actions.push_back( UserEvent( osc_number, color ) );
+  }
 
   bool empty( void ) const { return actions.empty(); }
   size_t size( void ) const { return actions.size(); }

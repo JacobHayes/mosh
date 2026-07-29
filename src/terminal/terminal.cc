@@ -50,6 +50,11 @@ std::string Emulator::read_octets_to_host( void )
   return ret;
 }
 
+void Emulator::set_OSC_color_response( const int osc_number, const std::string& color )
+{
+  dispatch.set_OSC_color_response( osc_number, color );
+}
+
 void Emulator::execute( const Parser::Execute* act )
 {
   dispatch.dispatch( CONTROL, act, &fb );

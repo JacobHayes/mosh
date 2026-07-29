@@ -29,8 +29,16 @@ message FeatureRequest {
   optional uint32 features = 1;  // bitmask; see Network::UserEvent
 }
 
+// Default terminal color learned by the client from its local terminal.
+// Used by the server-side emulator to answer xterm OSC 10/11 color queries.
+message TerminalColor {
+  optional int32 osc = 1;    // OSC color number, e.g. 10 (foreground) or 11 (background)
+  optional bytes color = 2;  // color payload, e.g. rgb:ffff/ffff/ffff
+}
+
 extend Instruction {
   optional Keystroke keystroke = 2;
   optional ResizeMessage resize = 3;
   optional FeatureRequest feature = 4;
+  optional TerminalColor terminal_color = 5;
 }

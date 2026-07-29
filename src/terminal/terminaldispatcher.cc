@@ -43,9 +43,31 @@
 using namespace Terminal;
 
 static const size_t MAXIMUM_CLIPBOARD_SIZE = 16 * 1024;
+static const size_t MAXIMUM_COLOR_RESPONSE_SIZE = 128;
+
+static bool valid_OSC_color_response( const std::string& color )
+{
+  if ( color.empty() || color == "?" || color.size() > MAXIMUM_COLOR_RESPONSE_SIZE ) {
+    return false;
+  }
+
+  for ( unsigned char ch : color ) {
+    if ( ch < 0x20 || ch > 0x7e ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+static bool supported_OSC_color_number( const int osc_number )
+{
+  return osc_number == 10 || osc_number == 11;
+}
 
 Dispatcher::Dispatcher()
-  : params(), parsed_params(), parsed( false ), dispatch_chars(), OSC_string(), terminal_to_host()
+  : params(), parsed_params(), parsed( false ), dispatch_chars(), OSC_string(), osc_color_responses(),
+    terminal_to_host()
 {}
 
 void Dispatcher::newparamchar( const Parser::Param* act )
@@ -163,6 +185,29 @@ std::string Dispatcher::str( void )
   return std::string( assum );
 }
 
+void Dispatcher::set_OSC_color_response( const int osc_number, const std::string& color )
+{
+  if ( !supported_OSC_color_number( osc_number ) || !valid_OSC_color_response( color ) ) {
+    return;
+  }
+
+  osc_color_responses[osc_number] = color;
+}
+
+std::string Dispatcher::get_OSC_color_response( const int osc_number ) const
+{
+  if ( !supported_OSC_color_number( osc_number ) ) {
+    return std::string();
+  }
+
+  std::map<int, std::string>::const_iterator it = osc_color_responses.find( osc_number );
+  if ( it == osc_color_responses.end() ) {
+    return std::string();
+  }
+
+  return it->second;
+}
+
 /* construct on first use to avoid static initialization order crash */
 DispatchRegistry& Terminal::get_global_dispatch_registry( void )
 {
@@ -254,5 +299,5 @@ bool Dispatcher::operator==( const Dispatcher& x ) const
 {
   return ( params == x.params ) && ( parsed_params == x.parsed_params ) && ( parsed == x.parsed )
          && ( dispatch_chars == x.dispatch_chars ) && ( OSC_string == x.OSC_string )
-         && ( terminal_to_host == x.terminal_to_host );
+         && ( osc_color_responses == x.osc_color_responses ) && ( terminal_to_host == x.terminal_to_host );
 }

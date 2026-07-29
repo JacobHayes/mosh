@@ -790,6 +790,11 @@ static void serve( int host_fd,
               }
               continue;
             }
+            if ( us.get_event( i ).type == Network::TerminalColorType ) {
+              terminal.set_OSC_color_response( us.get_event( i ).terminal_color_osc,
+                                               us.get_event( i ).terminal_color );
+              continue;
+            }
             const Parser::Action& action = us.get_action( i );
             if ( typeid( action ) == typeid( Parser::Resize ) ) {
               /* apply only the last consecutive Resize action */

@@ -96,6 +96,7 @@ private:
 
   std::string dispatch_chars;
   std::vector<wchar_t> OSC_string;
+  std::map<int, std::string> osc_color_responses;
 
   void parse_params( void );
 
@@ -118,6 +119,8 @@ public:
   void dispatch( Function_Type type, const Parser::Action* act, Framebuffer* fb );
   std::string get_dispatch_chars( void ) const { return dispatch_chars; }
   std::vector<wchar_t> get_OSC_string( void ) const { return OSC_string; }
+  void set_OSC_color_response( int osc_number, const std::string& color );
+  std::string get_OSC_color_response( int osc_number ) const;
 
   void OSC_put( const Parser::OSC_Put* act );
   void OSC_start( const Parser::OSC_Start* act );
