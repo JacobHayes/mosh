@@ -92,8 +92,10 @@ private:
 
   std::string local_terminal_foreground_color;
   std::string local_terminal_background_color;
+  std::string local_terminal_cursor_color;
   std::string sent_terminal_foreground_color;
   std::string sent_terminal_background_color;
+  std::string sent_terminal_cursor_color;
   std::string local_terminal_color_response_buffer;
   std::string pending_input;
   uint64_t last_terminal_color_query;
@@ -144,9 +146,10 @@ public:
       verbose( s_verbose ), scrollback_wanted( true ), scrollback_active( false ), scrollback_dirty( false ),
       emitted_history_rows( 0 ), emitted_clear_count( 0 ), emitted_truncate_count( 0 ),
       last_seen_history_rows( 0 ), last_scrollback_activity( 0 ), last_alt_active( false ),
-      local_terminal_foreground_color(), local_terminal_background_color(), sent_terminal_foreground_color(),
-      sent_terminal_background_color(), local_terminal_color_response_buffer(), pending_input(),
-      last_terminal_color_query( 0 ), next_terminal_color_query( 0 ), terminal_color_query_in_flight( false ),
+      local_terminal_foreground_color(), local_terminal_background_color(), local_terminal_cursor_color(),
+      sent_terminal_foreground_color(), sent_terminal_background_color(), sent_terminal_cursor_color(),
+      local_terminal_color_response_buffer(), pending_input(), last_terminal_color_query( 0 ),
+      next_terminal_color_query( 0 ), terminal_color_query_in_flight( false ),
       terminal_color_query_foreground_seen( false ), terminal_color_query_background_seen( false )
   {
     if ( getenv( "MOSH_NO_SCROLLBACK" ) ) {

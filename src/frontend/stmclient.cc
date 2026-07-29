@@ -117,16 +117,19 @@ static bool could_be_terminal_color_response_prefix( const std::string& input, c
   const std::string content = input.substr( content_start );
   const std::string foreground_prefix = "10;";
   const std::string background_prefix = "11;";
+  const std::string cursor_prefix = "12;";
 
   return ( foreground_prefix.compare( 0, content.size(), content ) == 0 )
          || ( background_prefix.compare( 0, content.size(), content ) == 0 )
+         || ( cursor_prefix.compare( 0, content.size(), content ) == 0 )
          || ( content.compare( 0, foreground_prefix.size(), foreground_prefix ) == 0 )
-         || ( content.compare( 0, background_prefix.size(), background_prefix ) == 0 );
+         || ( content.compare( 0, background_prefix.size(), background_prefix ) == 0 )
+         || ( content.compare( 0, cursor_prefix.size(), cursor_prefix ) == 0 );
 }
 
 void STMClient::request_local_terminal_colors( void )
 {
-  static const char color_queries[] = "\033]10;?\033\\\033]11;?\033\\";
+  static const char color_queries[] = "\033]10;?\033\\\033]11;?\033\\\033]12;?\033\\";
 
   freeze_timestamp();
   const uint64_t now = timestamp();
@@ -189,14 +192,14 @@ bool STMClient::collect_local_terminal_color_responses( std::string& input, cons
       int osc_number = 0;
 
       if ( semicolon != std::string::npos && parse_OSC_number( content, 0, semicolon, osc_number )
-           && ( osc_number == 10 || osc_number == 11 ) ) {
+           && ( osc_number == 10 || osc_number == 11 || osc_number == 12 ) ) {
         const std::string color = content.substr( semicolon + 1 );
         consumed = true;
 
         if ( terminal_color_query_in_flight ) {
           if ( osc_number == 10 ) {
             terminal_color_query_foreground_seen = true;
-          } else {
+          } else if ( osc_number == 11 ) {
             terminal_color_query_background_seen = true;
           }
         }
@@ -207,6 +210,9 @@ bool STMClient::collect_local_terminal_color_responses( std::string& input, cons
             changed = true;
           } else if ( osc_number == 11 && local_terminal_background_color != color ) {
             local_terminal_background_color = color;
+            changed = true;
+          } else if ( osc_number == 12 && local_terminal_cursor_color != color ) {
+            local_terminal_cursor_color = color;
             changed = true;
           }
         }
@@ -248,6 +254,10 @@ void STMClient::send_local_terminal_colors( void )
        && local_terminal_background_color != sent_terminal_background_color ) {
     network->get_current_state().push_back_terminal_color( 11, local_terminal_background_color );
     sent_terminal_background_color = local_terminal_background_color;
+  }
+  if ( !local_terminal_cursor_color.empty() && local_terminal_cursor_color != sent_terminal_cursor_color ) {
+    network->get_current_state().push_back_terminal_color( 12, local_terminal_cursor_color );
+    sent_terminal_cursor_color = local_terminal_cursor_color;
   }
 }
 
