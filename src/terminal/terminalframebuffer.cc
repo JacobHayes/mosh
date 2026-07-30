@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -284,7 +285,8 @@ DrawState::DrawState( int s_width, int s_height )
 
 Framebuffer::Framebuffer( int s_width, int s_height )
   : rows(), icon_name(), window_title(), clipboard(), bell_count( 0 ), title_initialized( false ),
-    passthrough_sequence_count( 0 ), passthrough_sequences(), discard_unterminated_chunks( false ), history(),
+    passthrough_sequence_count( 0 ), passthrough_sequences(), discard_unterminated_chunks( false ),
+    accept_graphics_sync( false ), history(),
     history_row_count( 0 ),
     history_clear_count( 0 ), history_truncate_count( 0 ), saved_primary_rows(), primary_saved_cursor(),
     alt_screen_active( false ), altscreen_enabled( false ), ds( s_width, s_height )
@@ -301,7 +303,8 @@ Framebuffer::Framebuffer( const Framebuffer& other )
     clipboard( other.clipboard ), bell_count( other.bell_count ), title_initialized( other.title_initialized ),
     passthrough_sequence_count( other.passthrough_sequence_count ),
     passthrough_sequences( other.passthrough_sequences ),
-    discard_unterminated_chunks( other.discard_unterminated_chunks ), history( other.history ),
+    discard_unterminated_chunks( other.discard_unterminated_chunks ),
+    accept_graphics_sync( other.accept_graphics_sync ), history( other.history ),
     history_row_count( other.history_row_count ), history_clear_count( other.history_clear_count ),
     history_truncate_count( other.history_truncate_count ), saved_primary_rows( other.saved_primary_rows ),
     primary_saved_cursor( other.primary_saved_cursor ),
@@ -320,6 +323,7 @@ Framebuffer& Framebuffer::operator=( const Framebuffer& other )
     passthrough_sequence_count = other.passthrough_sequence_count;
     passthrough_sequences = other.passthrough_sequences;
     discard_unterminated_chunks = other.discard_unterminated_chunks;
+    accept_graphics_sync = other.accept_graphics_sync;
     history = other.history;
     history_row_count = other.history_row_count;
     history_clear_count = other.history_clear_count;
@@ -1401,6 +1405,178 @@ void Framebuffer::clear_graphics_passthrough_sequences( void )
     } else {
       ++it;
     }
+  }
+}
+
+bool Framebuffer::sequence_is_graphics( const std::string& sequence )
+{
+  return passthrough_sequence_is_graphics( sequence );
+}
+
+std::string Framebuffer::graphics_sync_sequence( void ) const
+{
+  std::string body;
+  bool in_group = false;   /* an open kitty chunk group is being merged */
+  bool have_entry = false; /* fields below hold a pending entry */
+  uint64_t first = 0, last = 0;
+  int row = 0, col = 0;
+  bool has_control = false;
+  std::string control;
+
+  const auto flush = [&]() {
+    if ( !have_entry ) {
+      return;
+    }
+    body.push_back( ';' );
+    body.append( std::to_string( first ) );
+    if ( last != first ) {
+      body.push_back( '-' );
+      body.append( std::to_string( last ) );
+    }
+    body.push_back( ':' );
+    body.append( std::to_string( row ) );
+    body.push_back( ':' );
+    body.append( std::to_string( col ) );
+    if ( has_control ) {
+      body.push_back( ':' );
+      body.append( control );
+    }
+    have_entry = false;
+  };
+
+  for ( const PassthroughSequence& s : passthrough_sequences ) {
+    if ( !passthrough_sequence_is_graphics( s.sequence ) ) {
+      continue; /* ranges may span its sequence number; reconcile only touches graphics */
+    }
+    const bool kitty = starts_with( s.sequence, "\033_G" );
+    if ( kitty && in_group && have_entry && !kitty_graphics_sequence_starts_chunk( s.sequence ) ) {
+      /* continuation chunk: extend the group's range */
+      last = s.sequence_number;
+      if ( kitty_graphics_sequence_finishes_chunk( s.sequence ) ) {
+        in_group = false;
+      }
+      continue;
+    }
+    flush();
+    first = last = s.sequence_number;
+    row = s.cursor_row;
+    col = s.cursor_col;
+    has_control = false;
+    control.clear();
+    in_group = false;
+    if ( kitty ) {
+      size_t start = 0, len = 0;
+      has_control = kitty_graphics_control_data( s.sequence, start, len, control );
+      in_group = kitty_graphics_sequence_starts_chunk( s.sequence )
+                 && !kitty_graphics_sequence_finishes_chunk( s.sequence );
+    }
+    have_entry = true;
+  }
+  flush();
+
+  return std::string( "\033_Mgsync" ) + body + "\033\\";
+}
+
+void Framebuffer::apply_graphics_sync( const std::string& apc )
+{
+  struct Entry
+  {
+    uint64_t first, last;
+    int row, col;
+    bool has_control;
+    std::string control;
+  };
+  std::vector<Entry> entries;
+
+  const auto parse_int = []( const std::string& str, long long& out ) {
+    if ( str.empty() ) {
+      return false;
+    }
+    char* end = NULL;
+    errno = 0;
+    out = strtoll( str.c_str(), &end, 10 );
+    return errno == 0 && end == str.c_str() + str.size();
+  };
+
+  size_t pos = strlen( "Mgsync" );
+  if ( pos < apc.size() && apc[pos] != ';' ) {
+    return; /* malformed; skip the reconcile rather than misapply it */
+  }
+  while ( pos < apc.size() ) {
+    pos++; /* the ';' separator */
+    size_t end = apc.find( ';', pos );
+    if ( end == std::string::npos ) {
+      end = apc.size();
+    }
+    const std::string entry = apc.substr( pos, end - pos );
+    pos = end;
+
+    /* <first>[-<last>]:<row>:<col>[:<control>] -- control may itself
+       contain ':' (never ';'), so split only the first three fields */
+    const size_t c1 = entry.find( ':' );
+    const size_t c2 = ( c1 == std::string::npos ) ? std::string::npos : entry.find( ':', c1 + 1 );
+    if ( c2 == std::string::npos ) {
+      return;
+    }
+    const size_t c3 = entry.find( ':', c2 + 1 );
+
+    Entry e;
+    std::string range = entry.substr( 0, c1 );
+    const size_t dash = range.find( '-' );
+    long long first = 0, last = 0, row = 0, col = 0;
+    if ( !parse_int( ( dash == std::string::npos ) ? range : range.substr( 0, dash ), first ) ) {
+      return;
+    }
+    last = first;
+    if ( dash != std::string::npos && !parse_int( range.substr( dash + 1 ), last ) ) {
+      return;
+    }
+    if ( !parse_int( entry.substr( c1 + 1, c2 - c1 - 1 ), row )
+         || !parse_int( entry.substr( c2 + 1, ( c3 == std::string::npos ? entry.size() : c3 ) - c2 - 1 ), col )
+         || first < 0 || last < first ) {
+      return;
+    }
+    e.first = (uint64_t)first;
+    e.last = (uint64_t)last;
+    e.row = (int)row;
+    e.col = (int)col;
+    e.has_control = ( c3 != std::string::npos );
+    if ( e.has_control ) {
+      e.control = entry.substr( c3 + 1 );
+    }
+    entries.push_back( e );
+  }
+
+  for ( passthrough_sequences_type::iterator it = passthrough_sequences.begin();
+        it != passthrough_sequences.end(); ) {
+    if ( !passthrough_sequence_is_graphics( it->sequence ) ) {
+      ++it;
+      continue;
+    }
+    const Entry* match = NULL;
+    for ( const Entry& e : entries ) {
+      if ( e.first <= it->sequence_number && it->sequence_number <= e.last ) {
+        match = &e;
+        break;
+      }
+    }
+    if ( !match ) {
+      it = passthrough_sequences.erase( it );
+      continue;
+    }
+    /* clamp: the sequence is also reachable by apps writing the APC
+       themselves, and anchors must stay on the screen */
+    it->cursor_row = std::min( std::max( match->row, 0 ), ds.get_height() - 1 );
+    it->cursor_col = std::min( std::max( match->col, 0 ), ds.get_width() - 1 );
+    if ( match->has_control && it->sequence_number == match->first ) {
+      size_t start = 0, len = 0;
+      std::string control_data;
+      if ( kitty_graphics_control_data( it->sequence, start, len, control_data )
+           && control_data != match->control ) {
+        it->sequence.replace( start, len, match->control );
+      }
+    }
+    ++it;
   }
 }
 

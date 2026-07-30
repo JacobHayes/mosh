@@ -76,7 +76,12 @@ public:
   Complete( size_t width, size_t height )
     : parser(), terminal( width, height ), display( false ), actions(), input_history(), echo_ack( 0 ),
       history_subscribed( false ), history_receive_capacity( 0 )
-  {}
+  {
+    /* diffs are consumed by the peer's emulator, not a real terminal:
+       full repaints reconcile retained graphics instead of replaying
+       their payloads (a multi-megabyte instruction stalls the transport) */
+    display.set_statesync_diff( true );
+  }
 
   std::string act( const std::string& str );
   std::string act( const Parser::Action& act );

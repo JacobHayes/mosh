@@ -504,6 +504,12 @@ private:
      the group's remaining chunks are discarded as they arrive */
   bool discard_unterminated_chunks;
 
+  /* Transient trust gate, not part of the synchronized state: the
+     mosh-private graphics reconcile APC is honored only while parsing
+     a statesync diff (Complete::apply_string), so application output
+     cannot forge one and desync the peers. */
+  bool accept_graphics_sync;
+
   /* Scrollback history.  The ring is shared among all Framebuffer
      copies held by the transport; the counters are per-state
      snapshots and are part of the synchronized state. */
@@ -614,6 +620,24 @@ public:
   void clear_graphics_passthrough_sequences( void );
   uint64_t get_passthrough_sequence_count( void ) const { return passthrough_sequence_count; }
   const passthrough_sequences_type& get_passthrough_sequences( void ) const { return passthrough_sequences; }
+
+  /* True for sequences that place graphics (kitty APC, SIXEL DCS,
+     iTerm2 OSC 1337 files). */
+  static bool sequence_is_graphics( const std::string& sequence );
+
+  /* Authoritative retained-graphics reconcile, used by statesync
+     full-frame diffs in place of replaying image payloads: the
+     mosh-private APC "\033_Mgsync[;<first>[-<last>]:<row>:<col>
+     [:<control>]...]\033\\" describes every retained graphics sequence
+     (by sequence number) with its anchor and -- for kitty sequences --
+     its current, possibly scroll-clipped, control data.  The receiver
+     drops retained graphics sequences not listed and updates the
+     anchors and control bytes of those that are; payload bytes are
+     never re-sent (live forwarding already delivered them). */
+  std::string graphics_sync_sequence( void ) const;
+  void apply_graphics_sync( const std::string& apc );
+  void set_accept_graphics_sync( bool accept ) { accept_graphics_sync = accept; }
+  bool get_accept_graphics_sync( void ) const { return accept_graphics_sync; }
 
   void resize( int s_width, int s_height );
 

@@ -30,6 +30,24 @@ static void assert_not_contains( const std::string& haystack, const std::string&
   assert( haystack.find( needle ) == std::string::npos );
 }
 
+/* Compare the parts of two independently built framebuffers that the
+   statesync protocol promises to keep converged.  (Framebuffer's own
+   operator== compares row shared_ptrs, so it only works between copies.) */
+static void assert_synced( const Terminal::Complete& client, const Terminal::Complete& server )
+{
+  const Terminal::Framebuffer& c = client.get_fb();
+  const Terminal::Framebuffer& s = server.get_fb();
+  assert( c.ds.get_width() == s.ds.get_width() );
+  assert( c.ds.get_height() == s.ds.get_height() );
+  assert( c.ds.get_cursor_row() == s.ds.get_cursor_row() );
+  assert( c.ds.get_cursor_col() == s.ds.get_cursor_col() );
+  for ( int y = 0; y < s.ds.get_height(); y++ ) {
+    assert( c.get_row( y )->cells == s.get_row( y )->cells );
+  }
+  assert( c.get_passthrough_sequence_count() == s.get_passthrough_sequence_count() );
+  assert( c.get_passthrough_sequences() == s.get_passthrough_sequences() );
+}
+
 static std::string act_user_bytes( Terminal::Complete& terminal, const std::string& bytes )
 {
   std::string ret;
@@ -413,6 +431,142 @@ int main( void )
     assert( graphics_terminal.act( "\033[24;1H" ).empty() );
     graphics_terminal.act( Parser::Resize( 80, 10 ) );
     assert( graphics_terminal.get_fb().get_passthrough_sequences().empty() );
+  }
+
+  {
+    /* DECSED ?2J clears the screen's cells but -- unlike ED 2 -- leaves
+       retained graphics passthrough state alone (statesync full repaints
+       depend on this). */
+    Terminal::Complete decsed_terminal( 80, 10 );
+    assert( decsed_terminal.act( "\033[3;1Hhello" ).empty() );
+    assert( decsed_terminal.act( "\033_Ga=T,f=32,s=1,v=1,c=1,r=1,C=1;AAAA\033\\" ).empty() );
+    assert( decsed_terminal.act( "\033[?2J" ).empty() );
+    assert_not_contains( decsed_terminal.get_fb().get_cell( 2, 0 )->debug_contents(), "'h'" );
+    assert( decsed_terminal.get_fb().get_passthrough_sequences().size() == 1 );
+
+    Terminal::Complete ed_terminal( 80, 10 );
+    assert( ed_terminal.act( "\033_Ga=T,f=32,s=1,v=1,c=1,r=1,C=1;AAAA\033\\" ).empty() );
+    assert( ed_terminal.act( "\033[2J" ).empty() );
+    assert( ed_terminal.get_fb().get_passthrough_sequences().empty() );
+  }
+
+  {
+    /* The private graphics reconcile APC is only honored inside a
+       statesync diff: an application forging one must not disturb the
+       emulator's retained state (it would silently desync the peers). */
+    Terminal::Complete forge_terminal( 80, 10 );
+    assert( forge_terminal.act( "\033_Ga=T,f=32,s=1,v=1,c=1,r=1,C=1;AAAA\033\\" ).empty() );
+    assert( forge_terminal.act( "\033_Mgsync\033\\" ).empty() );
+    assert( forge_terminal.act( "\033_Mgsync;1:9:9\033\\" ).empty() );
+    assert( forge_terminal.get_fb().get_passthrough_sequences().size() == 1 );
+    assert( forge_terminal.get_fb().get_passthrough_sequences().front().cursor_row == 0 );
+  }
+
+  {
+    /* A statesync resize diff must not re-embed retained image payloads:
+       the client already holds them from live forwarding, and a
+       multi-megabyte instruction stalls the transport (the resize
+       hang/disconnect bug).  The diff still has to leave the client's
+       retained state converged with the server's. */
+    Terminal::Complete server( 80, 24 );
+    server.enable_history( 1000, true );
+    server.set_history_subscribed( true );
+    Terminal::Complete client( 80, 24 );
+    client.apply_string( server.diff_from( client ) );
+
+    assert( server.act( "\033[5;1H" ).empty() );
+    assert( server.act( "\033_Ga=T,f=32,s=1,v=1,c=2,r=2,m=1;AAAA\033\\" ).empty() );
+    for ( int i = 0; i < 255; i++ ) {
+      assert( server.act( std::string( "\033_Gm=1;" ) + std::string( 4096, 'A' ) + "\033\\" ).empty() );
+    }
+    assert( server.act( std::string( "\033_Gm=0;" ) + std::string( 4096, 'A' ) + "\033\\" ).empty() );
+
+    /* live forwarding delivers the image bytes once */
+    client.apply_string( server.diff_from( client ) );
+    assert_synced( client, server );
+
+    server.act( Parser::Resize( 132, 50 ) );
+    const std::string resize_diff = server.diff_from( client );
+    assert( resize_diff.size() < 128 * 1024 );
+    client.apply_string( resize_diff );
+    assert_synced( client, server );
+
+    /* and back down: still bounded, still converged */
+    server.act( Parser::Resize( 80, 24 ) );
+    const std::string shrink_diff = server.diff_from( client );
+    assert( shrink_diff.size() < 128 * 1024 );
+    client.apply_string( shrink_diff );
+    assert_synced( client, server );
+  }
+
+  {
+    /* The server's anchors are authoritative on a resize.  Output that
+       scrolls the screen between the acked state and the resize means the
+       client's own reflow translates from stale positions; the resize
+       diff must correct them. */
+    Terminal::Complete server( 80, 24 );
+    server.enable_history( 1000, true );
+    server.set_history_subscribed( true );
+    Terminal::Complete client( 80, 24 );
+    client.apply_string( server.diff_from( client ) );
+
+    assert( server.act( "\033[10;1H" ).empty() );
+    assert( server.act( "\033_Ga=T,f=32,s=1,v=1,c=1,r=1,C=1;AAAA\033\\" ).empty() );
+    client.apply_string( server.diff_from( client ) );
+    assert_synced( client, server );
+    assert( client.get_fb().get_passthrough_sequences().front().cursor_row == 9 );
+
+    /* five scrolls, then a resize, in the same diff */
+    assert( server.act( "\033[24;1H\n\n\n\n\n" ).empty() );
+    server.act( Parser::Resize( 100, 24 ) );
+    assert( server.get_fb().get_passthrough_sequences().front().cursor_row == 4 );
+    client.apply_string( server.diff_from( client ) );
+    assert_synced( client, server );
+    assert( client.get_fb().get_passthrough_sequences().front().cursor_row == 4 );
+  }
+
+  {
+    /* An app clear (ED 2) empties the server's retained graphics; the
+       next full-frame diff must drop the client's copies too. */
+    Terminal::Complete server( 80, 24 );
+    server.enable_history( 1000, true );
+    server.set_history_subscribed( true );
+    Terminal::Complete client( 80, 24 );
+    client.apply_string( server.diff_from( client ) );
+
+    assert( server.act( "\033_Ga=T,f=32,s=1,v=1,c=1,r=1,C=1;AAAA\033\\" ).empty() );
+    client.apply_string( server.diff_from( client ) );
+    assert( !client.get_fb().get_passthrough_sequences().empty() );
+
+    assert( server.act( "\033[2J" ).empty() );
+    assert( server.get_fb().get_passthrough_sequences().empty() );
+    server.act( Parser::Resize( 100, 24 ) );
+    client.apply_string( server.diff_from( client ) );
+    assert_synced( client, server );
+    assert( client.get_fb().get_passthrough_sequences().empty() );
+  }
+
+  {
+    /* Scroll-clipping rewrites a retained placement's control data on the
+       server (y=/h=/r= crop) without a new sequence number; the next
+       full-frame diff must carry the rewritten bytes to the client. */
+    Terminal::Complete server( 80, 5 );
+    server.enable_history( 1000, true );
+    server.set_history_subscribed( true );
+    Terminal::Complete client( 80, 5 );
+    client.apply_string( server.diff_from( client ) );
+
+    assert( server.act( "\033_Ga=T,s=10,v=50,c=1,r=5,m=1;AAAA\033\\" ).empty() );
+    assert( server.act( "\033_Gm=0;BBBB\033\\" ).empty() );
+    client.apply_string( server.diff_from( client ) );
+    assert_synced( client, server );
+
+    assert( server.act( "\n" ).empty() ); /* clips another row off the top */
+    assert_contains( server.get_fb().get_passthrough_sequences().front().sequence, "y=20" );
+    server.act( Parser::Resize( 81, 5 ) );
+    client.apply_string( server.diff_from( client ) );
+    assert_synced( client, server );
+    assert_contains( client.get_fb().get_passthrough_sequences().front().sequence, "y=20" );
   }
 
   before = terminal.get_fb();

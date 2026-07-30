@@ -57,6 +57,18 @@ static bool frame_has_kitty_graphics( const Framebuffer& fb )
   return false;
 }
 
+static bool frame_has_graphics( const Framebuffer& fb )
+{
+  const Framebuffer::passthrough_sequences_type& sequences = fb.get_passthrough_sequences();
+  for ( Framebuffer::passthrough_sequences_type::const_iterator it = sequences.begin(); it != sequences.end();
+        ++it ) {
+    if ( Framebuffer::sequence_is_graphics( it->sequence ) ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::string Display::open() const
 {
   return std::string( smcup ? smcup : "" ) + std::string( "\033[?1h" );
@@ -147,15 +159,20 @@ std::string Display::new_frame( bool initialized, const Framebuffer& last, const
     /* reset scrolling region */
     frame.append( "\033[r" );
 
-    /* clear screen */
-    frame.append( "\033[0m\033[H\033[2J" );
+    /* clear screen -- in a statesync diff, with DECSED (?2J), which our
+       emulator implements as a screen clear that leaves retained
+       graphics passthrough state and scrollback capture alone: the
+       receiver's retained state is reconciled explicitly below instead
+       of being wiped and replayed */
+    frame.append( statesync_diff ? "\033[0m\033[H\033[?2J" : "\033[0m\033[H\033[2J" );
 
     /* Kitty images live in the host terminal's own image store, not in
        the cell grid, so ESC[2J does not necessarily remove them (it does
        in Ghostty, but that is emulator-specific).  Delete them explicitly
        and host-agnostically before the retained placements are replayed,
        freeing host-side image storage in the process. */
-    if ( frame_has_kitty_graphics( frame.last_frame ) || frame_has_kitty_graphics( f ) ) {
+    if ( ( !statesync_diff )
+         && ( frame_has_kitty_graphics( frame.last_frame ) || frame_has_kitty_graphics( f ) ) ) {
       frame.append( "\033_Ga=d,d=A\033\\" );
     }
 
@@ -290,14 +307,18 @@ std::string Display::new_frame( bool initialized, const Framebuffer& last, const
   /* replay shell-integration and graphics pass-through events.  New
      events (sequence_number past the previous frame's count) are always
      forwarded live; on a full-frame repaint every retained *replayable*
-     event is re-emitted too (queries are forwarded but never replayed). */
+     event is re-emitted too (queries are forwarded but never replayed).
+     A statesync diff never replays: the receiving emulator already holds
+     the retained bytes from live forwarding, and re-embedding megabytes
+     of image payload in a single instruction stalls the transport (the
+     resize hang).  Its retained state is reconciled below instead. */
   const uint64_t prev_passthrough_sequence_count = frame.last_frame.get_passthrough_sequence_count();
   const Framebuffer::passthrough_sequences_type& passthrough_sequences = f.get_passthrough_sequences();
   for ( Framebuffer::passthrough_sequences_type::const_iterator it = passthrough_sequences.begin();
         it != passthrough_sequences.end();
         ++it ) {
     const bool forward_live = it->sequence_number > prev_passthrough_sequence_count;
-    const bool replay_repaint = ( !initialized ) && it->replayable;
+    const bool replay_repaint = ( !statesync_diff ) && ( !initialized ) && it->replayable;
     if ( forward_live || replay_repaint ) {
       frame.append_move( it->cursor_row, it->cursor_col );
       frame.append_string( it->sequence );
@@ -306,6 +327,16 @@ std::string Display::new_frame( bool initialized, const Framebuffer& last, const
       frame.cursor_x = -1;
       frame.cursor_y = -1;
     }
+  }
+
+  /* On a statesync full repaint, reconcile the receiver's retained
+     graphics: the client applied the resize instruction and reflowed
+     its own copies, but output racing the resize (or an app clear it
+     never saw as ESC[2J) can leave its membership, anchors, or
+     scroll-clipped control data stale.  The server's are authoritative. */
+  if ( statesync_diff && ( !initialized )
+       && ( frame_has_graphics( frame.last_frame ) || frame_has_graphics( f ) ) ) {
+    frame.append_string( f.graphics_sync_sequence() );
   }
 
   /* has cursor location changed? */

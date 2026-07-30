@@ -80,6 +80,13 @@ private:
                            the host terminal's scrollback is managed
                            explicitly, so no stray lines can leak into it */
 
+  bool statesync_diff; /* frames are consumed by the peer's emulator over the
+                          network, not by a real terminal: full repaints must
+                          not re-embed retained graphics payloads (megabytes
+                          in one instruction stall the transport); retained
+                          state is reconciled with a compact private
+                          sequence instead */
+
   bool put_row( bool initialized,
                 FrameState& frame,
                 const Framebuffer& f,
@@ -94,6 +101,7 @@ public:
   std::string close( bool exit_alternate_screen = true ) const;
 
   void set_scroll_shortcut( bool s ) { scroll_shortcut = s; }
+  void set_statesync_diff( bool s ) { statesync_diff = s; }
   std::string exit_alternate_screen() const { return std::string( rmcup ? rmcup : "" ); }
 
   std::string new_frame( bool initialized, const Framebuffer& last, const Framebuffer& f ) const;

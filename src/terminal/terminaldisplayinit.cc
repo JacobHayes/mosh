@@ -81,7 +81,8 @@ static const char* ti_str( const char* capname )
 }
 
 Display::Display( bool use_environment )
-  : has_ech( true ), has_bce( true ), has_title( true ), smcup( NULL ), rmcup( NULL ), scroll_shortcut( true )
+  : has_ech( true ), has_bce( true ), has_title( true ), smcup( NULL ), rmcup( NULL ), scroll_shortcut( true ),
+    statesync_diff( false )
 {
   if ( use_environment ) {
     int errret = -2;

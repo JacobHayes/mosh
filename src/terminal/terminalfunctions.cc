@@ -108,6 +108,40 @@ static void CSI_ED( Framebuffer* fb, Dispatcher* dispatch )
 
 static Function func_CSI_ED( CSI, "J", CSI_ED );
 
+/* selective erase in display (DECSED, CSI ? Ps J).  We don't model
+   DECSCA protection, so erasure matches ED -- except that ?2J leaves
+   retained graphics passthrough state alone and doesn't capture the
+   screen into scrollback.  Mosh's statesync diffs rely on this: a
+   full-frame repaint clears the receiving emulator's screen with ?2J
+   and reconciles its retained graphics explicitly, instead of wiping
+   them and re-sending megabytes of image payload. */
+static void CSI_DECSED( Framebuffer* fb, Dispatcher* dispatch )
+{
+  switch ( dispatch->getparam( 0, 0 ) ) {
+    case 0: /* active position to end of screen, inclusive */
+      clearline( fb, -1, fb->ds.get_cursor_col(), fb->ds.get_width() - 1 );
+      for ( int y = fb->ds.get_cursor_row() + 1; y < fb->ds.get_height(); y++ ) {
+        fb->reset_row( fb->get_mutable_row( y ) );
+      }
+      break;
+    case 1: /* start of screen to active position, inclusive */
+      for ( int y = 0; y < fb->ds.get_cursor_row(); y++ ) {
+        fb->reset_row( fb->get_mutable_row( y ) );
+      }
+      clearline( fb, -1, 0, fb->ds.get_cursor_col() );
+      break;
+    case 2: /* entire screen */
+      for ( int y = 0; y < fb->ds.get_height(); y++ ) {
+        fb->reset_row( fb->get_mutable_row( y ) );
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+static Function func_CSI_DECSED( CSI, "?J", CSI_DECSED );
+
 /* cursor movement -- relative and absolute */
 static void CSI_cursormove( Framebuffer* fb, Dispatcher* dispatch )
 {
@@ -1298,6 +1332,17 @@ void Dispatcher::APC_dispatch( const Parser::APC_End* act __attribute( ( unused 
   std::string apc;
   if ( !parse_printable_ascii( get_APC_string(), apc ) ) {
     end_kitty_graphics_chunk();
+    return;
+  }
+
+  if ( starts_with( apc, "Mgsync" ) ) {
+    /* mosh-private retained-graphics reconcile from a statesync
+       full-frame diff; acts on the framebuffer's retained state and is
+       itself never retained or forwarded anywhere.  Honored only while
+       parsing a statesync diff, so an application can't forge one. */
+    if ( fb->get_accept_graphics_sync() ) {
+      fb->apply_graphics_sync( apc );
+    }
     return;
   }
 
