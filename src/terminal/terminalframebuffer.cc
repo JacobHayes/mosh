@@ -1027,7 +1027,10 @@ void Framebuffer::push_passthrough_sequence( const std::string& sequence )
                                                         sequence ) );
 
   static const size_t MAX_PASSTHROUGH_SEQUENCES = 32;
-  static const size_t MAX_PASSTHROUGH_BYTES = 512 * 1024;
+  /* Keep recent passthrough graphics/shell-integration events bounded, while
+     allowing ordinary terminal-sized direct inline images to survive until the
+     next display frame. */
+  static const size_t MAX_PASSTHROUGH_BYTES = 4 * 1024 * 1024;
   size_t bytes = 0;
   for ( passthrough_sequences_type::const_iterator it = passthrough_sequences.begin();
         it != passthrough_sequences.end();

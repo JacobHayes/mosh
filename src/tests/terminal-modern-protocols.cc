@@ -101,6 +101,15 @@ int main( void )
   frame = frame_from( before, terminal.get_fb() );
   assert_not_contains( frame, "\033_Ga=T,t=f;/tmp/local-file.png\033\\" );
 
+  {
+    Terminal::Complete graphics_terminal( 80, 24 );
+    const std::string large_payload( 600 * 1024, 'A' );
+    assert( graphics_terminal.act( std::string( "\033_Ga=T,f=32,s=1,v=1;" ) + large_payload + "\033\\" ).empty() );
+    assert( graphics_terminal.get_fb().get_passthrough_sequences().size() == 1 );
+    frame = frame_from( Terminal::Framebuffer( 80, 24 ), graphics_terminal.get_fb() );
+    assert_contains( frame, large_payload.substr( 0, 1024 ) );
+  }
+
   before = terminal.get_fb();
   assert( terminal.act( "\033Pq~~~~\033\\" ).empty() );
   frame = frame_from( before, terminal.get_fb() );

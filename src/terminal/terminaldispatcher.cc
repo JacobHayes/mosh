@@ -42,7 +42,10 @@
 
 using namespace Terminal;
 
-static const size_t MAXIMUM_CONTROL_STRING_SIZE = 256 * 1024;
+/* Modern inline graphics payloads (kitty, iTerm2, SIXEL) commonly exceed
+   256 KiB for a terminal-sized image. Keep the parser bounded, but large
+   enough for ordinary direct inline image output. */
+static const size_t MAXIMUM_CONTROL_STRING_SIZE = 4 * 1024 * 1024;
 static const size_t MAXIMUM_COLOR_RESPONSE_SIZE = 128;
 
 static bool valid_OSC_color_response( const std::string& color )
