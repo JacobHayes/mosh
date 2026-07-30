@@ -79,6 +79,8 @@ my @ssh = ('ssh');
 
 my $term_init = 1;
 
+my $server_term = $ENV{ 'MOSH_SERVER_TERM' };
+
 my $localhost = undef;
 
 my $ssh_pty = 1;
@@ -94,6 +96,9 @@ qq{Usage: $0 [options] [--] [user@]host [command...]
                                 (default: "mosh-client")
         --server=COMMAND     mosh server on remote machine
                                 (default: "mosh-server")
+        --server-term=TERM   terminal type to advertise on the server;
+                                use "client" to forward local TERM
+                                (default: xterm or xterm-256color)
 
         --predict=adaptive      local echo for slower links [default]
 -a      --predict=always        use local echo even on fast links
@@ -154,6 +159,7 @@ sub predict_check {
 
 GetOptions( 'client=s' => \$client,
 	    'server=s' => \$server,
+	    'server-term=s' => \$server_term,
 	    'predict=s' => \$predict,
 	    'predict-overwrite|o!' => \$overwrite,
 	    'port=s' => \$port_request,
@@ -234,6 +240,23 @@ if ( defined $port_request ) {
 }
 
 delete $ENV{ 'MOSH_PREDICTION_DISPLAY' };
+
+if ( defined $server_term ) {
+  if ( lc( $server_term ) eq 'client' ) {
+    die "$0: --server-term=client requested, but TERM is not set.\n"
+      unless defined $ENV{ 'TERM' };
+    $server_term = $ENV{ 'TERM' };
+  }
+
+  if ( length $server_term ) {
+    my $safe_server_term = sanitize_terminal_type( $server_term );
+    die "$0: terminal type \"$server_term\" is not a safe terminfo name.\n"
+      unless defined $safe_server_term;
+    $server_term = $safe_server_term;
+  } else {
+    $server_term = undef;
+  }
+}
 
 my $userhost;
 my @command;
@@ -378,6 +401,10 @@ if ( $pid == 0 ) { # child
 
   push @server, ( '-c', $colors );
 
+  if ( defined $server_term ) {
+    push @server, ( '-t', $server_term );
+  }
+
   push @server, @bind_arguments;
 
   if ( defined $port_request ) {
@@ -466,6 +493,14 @@ if ( $pid == 0 ) { # child
 }
 
 sub shell_quote { join ' ', map {(my $a = $_) =~ s/'/'\\''/g; "'$a'"} @_ }
+
+sub sanitize_terminal_type {
+  my ( $term ) = @_;
+
+  return undef unless defined $term;
+  return undef unless $term =~ m{\A[A-Za-z0-9_.+-]{1,64}\z};
+  return $term;
+}
 
 sub locale_vars {
   my @names = qw[LANG LANGUAGE LC_CTYPE LC_NUMERIC LC_TIME LC_COLLATE LC_MONETARY LC_MESSAGES LC_PAPER LC_NAME LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT LC_IDENTIFICATION LC_ALL];

@@ -25,6 +25,7 @@ new
 [\-i \fIIP\fP]
 [\-p \fIPORT\fP[:\fIPORT2\fP]]
 [\-c \fICOLORS\fP]
+[\-t \fITERM\fP]
 [\-\- command...]
 .br
 .SH DESCRIPTION
@@ -77,6 +78,13 @@ operating system pick an available UDP port.
 .TP
 .B \-c \fICOLORS\fP
 Number of colors to advertise to applications through TERM (e.g. 8, 256)
+
+.TP
+.B \-t \fITERM\fP
+Terminal type to advertise to applications through TERM. The value must be a
+single terminfo-style name containing only letters, digits, underscore, dash,
+dot, or plus. If this option is omitted, \fBmosh-server\fP advertises
+\fBxterm\fP or \fBxterm-256color\fP based on \fB-c\fP.
 
 .TP
 .B \-l \fINAME=VALUE\fP

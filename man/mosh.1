@@ -115,6 +115,18 @@ OpenSSH command to remotely execute mosh-server on remote machine (default: "ssh
 An alternate ssh port can be specified with, \fIe.g.\fP, \-\-ssh="ssh \-p 2222".
 
 .TP
+.B \-\-server\-term=\fITERM\fP
+Terminal type to advertise to applications on the server. By default,
+\fBmosh-server\fP advertises \fBxterm\fP or \fBxterm-256color\fP based on the
+client's color support. Use \fB--server-term=client\fP to forward the
+client's \fBTERM\fP value instead. The same setting can be supplied with the
+\fBMOSH_SERVER_TERM\fP environment variable.
+
+Forwarding the client terminal type can help applications select modern
+terminal features, but it may require the corresponding terminfo entry on the
+server.
+
+.TP
 .B \-\-ssh-pty\fP
 .B \-\-no-ssh-pty\fP
 Enable or disable ssh's use of a pty when connecting to a remote host.

@@ -110,6 +110,7 @@ static int run_server( const char* desired_ip,
                        const std::string& command_path,
                        char* command_argv[],
                        const int colors,
+                       const std::string& terminal_type,
                        unsigned int verbose,
                        bool with_motd );
 
@@ -126,8 +127,26 @@ static void print_version( FILE* file )
 static void print_usage( FILE* stream, const char* argv0 )
 {
   fprintf( stream,
-           "Usage: %s new [-s] [-v] [-i LOCALADDR] [-p PORT[:PORT2]] [-c COLORS] [-l NAME=VALUE] [-- COMMAND...]\n",
+           "Usage: %s new [-s] [-v] [-i LOCALADDR] [-p PORT[:PORT2]] [-c COLORS] [-t TERM] [-l NAME=VALUE] [-- COMMAND...]\n",
            argv0 );
+}
+
+static bool valid_terminal_type( const std::string& terminal_type )
+{
+  if ( terminal_type.empty() || terminal_type.size() > 64 ) {
+    return false;
+  }
+
+  for ( std::string::const_iterator it = terminal_type.begin(); it != terminal_type.end(); ++it ) {
+    const char ch = *it;
+    const bool allowed = ( ch >= 'A' && ch <= 'Z' ) || ( ch >= 'a' && ch <= 'z' )
+                         || ( ch >= '0' && ch <= '9' ) || ch == '-' || ch == '_' || ch == '.' || ch == '+';
+    if ( !allowed ) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 static bool print_motd( const char* filename );
@@ -191,6 +210,7 @@ int main( int argc, char* argv[] )
   char** command_argv = NULL;
   int colors = 0;
   unsigned int verbose = 0; /* don't close stdin/stdout/stderr */
+  std::string terminal_type;
   /* Will cause mosh-server not to correctly detach on old versions of sshd. */
   std::list<std::string> locale_vars;
 
@@ -217,7 +237,7 @@ int main( int argc, char* argv[] )
   if ( ( argc >= 2 ) && ( strcmp( argv[1], "new" ) == 0 ) ) {
     /* new option syntax */
     int opt;
-    while ( ( opt = getopt( argc - 1, argv + 1, "@:i:p:c:svl:" ) ) != -1 ) {
+    while ( ( opt = getopt( argc - 1, argv + 1, "@:i:p:c:t:svl:" ) ) != -1 ) {
       switch ( opt ) {
           /*
            * This undocumented option does nothing but eat its argument.
@@ -248,6 +268,14 @@ int main( int argc, char* argv[] )
             colors = myatoi( optarg );
           } catch ( const CryptoException& ) {
             fprintf( stderr, "%s: Bad number of colors (%s)\n", argv[0], optarg );
+            print_usage( stderr, argv[0] );
+            exit( 1 );
+          }
+          break;
+        case 't':
+          terminal_type = optarg;
+          if ( !valid_terminal_type( terminal_type ) ) {
+            fprintf( stderr, "%s: Bad terminal type (%s)\n", argv[0], optarg );
             print_usage( stderr, argv[0] );
             exit( 1 );
           }
@@ -373,7 +401,7 @@ int main( int argc, char* argv[] )
   }
 
   try {
-    return run_server( desired_ip, desired_port, command_path, command_argv, colors, verbose, with_motd );
+    return run_server( desired_ip, desired_port, command_path, command_argv, colors, terminal_type, verbose, with_motd );
   } catch ( const Network::NetworkException& e ) {
     fprintf( stderr, "Network exception: %s\n", e.what() );
     return 1;
@@ -388,6 +416,7 @@ static int run_server( const char* desired_ip,
                        const std::string& command_path,
                        char* command_argv[],
                        const int colors,
+                       const std::string& terminal_type,
                        unsigned int verbose,
                        bool with_motd )
 {
@@ -582,8 +611,10 @@ static int run_server( const char* desired_ip,
     /* set TERM */
     const char default_term[] = "xterm";
     const char color_term[] = "xterm-256color";
+    const std::string effective_term = terminal_type.empty() ? ( ( colors == 256 ) ? color_term : default_term )
+                                                             : terminal_type;
 
-    if ( setenv( "TERM", ( colors == 256 ) ? color_term : default_term, true ) < 0 ) {
+    if ( setenv( "TERM", effective_term.c_str(), true ) < 0 ) {
       perror( "setenv" );
       exit( 1 );
     }
