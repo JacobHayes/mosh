@@ -447,18 +447,29 @@ public:
   uint64_t sequence_number;
   int cursor_col, cursor_row;
   std::string sequence;
+  /* Kitty query commands (a=q) are forwarded once but must not be
+     re-emitted on a full-frame repaint, or the foreground app receives
+     duplicate query responses. */
+  bool replayable;
 
-  PassthroughSequence( uint64_t s_sequence_number, int s_cursor_col, int s_cursor_row, std::string s_sequence )
+  PassthroughSequence( uint64_t s_sequence_number, int s_cursor_col, int s_cursor_row, std::string s_sequence,
+                       bool s_replayable = true )
     : sequence_number( s_sequence_number ), cursor_col( s_cursor_col ), cursor_row( s_cursor_row ),
-      sequence( std::move( s_sequence ) )
+      sequence( std::move( s_sequence ) ), replayable( s_replayable )
   {}
 
   bool operator==( const PassthroughSequence& x ) const
   {
     return ( sequence_number == x.sequence_number ) && ( cursor_col == x.cursor_col )
-           && ( cursor_row == x.cursor_row ) && ( sequence == x.sequence );
+           && ( cursor_row == x.cursor_row ) && ( sequence == x.sequence ) && ( replayable == x.replayable );
   }
 };
+
+/* Rewrite a kitty graphics passthrough sequence so its control data
+   carries C=1 (suppress the host terminal's own cursor movement).
+   mosh's differ owns all cursor positioning for placements, so the
+   host must never scroll or move as a side effect of a placement. */
+void force_kitty_graphics_cursor_policy( std::string& sequence );
 
 class Framebuffer
 {
@@ -596,7 +607,7 @@ public:
 
   void prefix_window_title( const title_type& s );
 
-  void push_passthrough_sequence( const std::string& sequence );
+  void push_passthrough_sequence( const std::string& sequence, bool replayable = true );
   void clear_graphics_passthrough_sequences( void );
   uint64_t get_passthrough_sequence_count( void ) const { return passthrough_sequence_count; }
   const passthrough_sequences_type& get_passthrough_sequences( void ) const { return passthrough_sequences; }

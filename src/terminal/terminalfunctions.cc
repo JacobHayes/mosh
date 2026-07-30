@@ -1304,13 +1304,25 @@ void Dispatcher::APC_dispatch( const Parser::APC_End* act __attribute( ( unused 
   std::string control_data;
   if ( kitty_graphics_should_passthrough( apc, control_data ) ) {
     std::string action;
-    if ( comma_arg_value( control_data, "a", action ) && action == "d" ) {
+    comma_arg_value( control_data, "a", action );
+    if ( action == "d" ) {
       /* Keep the delete event for attached clients, but do not retain older
          placements that it invalidates for future full-frame replays. */
       fb->clear_graphics_passthrough_sequences();
     }
 
-    fb->push_passthrough_sequence( std::string( "\033_" ) + apc + "\033\\" );
+    std::string sequence = std::string( "\033_" ) + apc + "\033\\";
+    if ( action == "T" || action == "p" ) {
+      /* Force C=1 on the forwarded/stored placement bytes so the host
+         terminal never moves its cursor or scrolls as a side effect --
+         mosh's differ owns all positioning.  The model's own
+         cursor-movement decision below still uses the original control
+         data (so an app sending C=0 still moves mosh's cursor). */
+      force_kitty_graphics_cursor_policy( sequence );
+    }
+    /* a=q query commands are forwarded live but must not be replayed on
+       a full-frame repaint, or the app gets duplicate query responses. */
+    fb->push_passthrough_sequence( sequence, action != "q" );
 
     int more_chunks = -1;
     comma_arg_nonnegative_int( control_data, "m", more_chunks );

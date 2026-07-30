@@ -125,7 +125,8 @@ int main( void )
 
     assert( graphics_terminal.get_fb().get_passthrough_sequences().size() > 32 );
     frame = frame_from( Terminal::Framebuffer( 80, 24 ), graphics_terminal.get_fb() );
-    assert_contains( frame, "\033_Ga=T,f=32,s=1,v=1,m=1\033\\" );
+    /* The action-carrying chunk is stored/forwarded with C=1 forced on. */
+    assert_contains( frame, "\033_Ga=T,f=32,s=1,v=1,m=1,C=1\033\\" );
     assert_contains( frame, std::string( "\033_Gm=1;" ) + first_chunk.substr( 0, 64 ) );
     assert_contains( frame, std::string( "\033_Gm=0;" ) + final_chunk.substr( 0, 64 ) );
   }
@@ -229,6 +230,65 @@ int main( void )
     frame = frame_from( Terminal::Framebuffer( 80, 10 ), graphics_terminal.get_fb() );
     assert_not_contains( frame, "\033_Ga=T,c=1,r=1,C=1;AAAA\033\\" );
     assert_contains( frame, "\033_Ga=d\033\\" );
+  }
+
+  {
+    /* C=1 is forced onto forwarded/stored placement bytes so the host
+       terminal never moves its own cursor; the app's C=0 (or absent C)
+       is rewritten. */
+    Terminal::Complete graphics_terminal( 80, 24 );
+    assert( graphics_terminal.act( "\033_Ga=T,f=32,s=1,v=1,c=1,r=1;AAAA\033\\" ).empty() );
+    frame = frame_from( Terminal::Framebuffer( 80, 24 ), graphics_terminal.get_fb() );
+    assert_contains( frame, "\033_Ga=T,f=32,s=1,v=1,c=1,r=1,C=1;AAAA\033\\" );
+    assert_not_contains( frame, "\033_Ga=T,f=32,s=1,v=1,c=1,r=1;AAAA\033\\" );
+  }
+
+  {
+    Terminal::Complete graphics_terminal( 80, 24 );
+    assert( graphics_terminal.act( "\033_Ga=T,f=32,s=1,v=1,c=1,r=1,C=0;AAAA\033\\" ).empty() );
+    frame = frame_from( Terminal::Framebuffer( 80, 24 ), graphics_terminal.get_fb() );
+    assert_contains( frame, "\033_Ga=T,f=32,s=1,v=1,c=1,r=1,C=1;AAAA\033\\" );
+    assert_not_contains( frame, "C=0" );
+  }
+
+  {
+    /* Query commands are never rewritten with C=1. */
+    Terminal::Complete graphics_terminal( 80, 24 );
+    assert( graphics_terminal.act( "\033_Ga=q,i=1;AAAA\033\\" ).empty() );
+    frame = frame_from( Terminal::Framebuffer( 80, 24 ), graphics_terminal.get_fb() );
+    assert_contains( frame, "\033_Ga=q,i=1;AAAA\033\\" );
+    assert_not_contains( frame, "C=1" );
+  }
+
+  {
+    /* A full-frame repaint deletes all host images before replaying the
+       retained placement, and only when graphics are actually retained. */
+    Terminal::Complete graphics_terminal( 80, 10 );
+    assert( graphics_terminal.act( "\033_Ga=T,f=32,s=1,v=1,c=1,r=1,C=1;AAAA\033\\" ).empty() );
+    Terminal::Framebuffer copy = graphics_terminal.get_fb();
+    Terminal::Display display( false );
+    const std::string repaint = display.new_frame( false, copy, graphics_terminal.get_fb() );
+    const size_t del = repaint.find( "\033_Ga=d,d=A\033\\" );
+    const size_t placement = repaint.find( "\033_Ga=T" );
+    assert( del != std::string::npos );
+    assert( placement != std::string::npos );
+    assert( del < placement );
+
+    const Terminal::Framebuffer plain( 80, 10 );
+    assert_not_contains( display.new_frame( false, plain, plain ), "\033_Ga=d" );
+  }
+
+  {
+    /* On a full-frame repaint a retained placement is replayed but a
+       retained query is not. */
+    Terminal::Complete graphics_terminal( 80, 10 );
+    assert( graphics_terminal.act( "\033_Ga=q,i=1;AAAA\033\\" ).empty() );
+    assert( graphics_terminal.act( "\033_Ga=T,f=32,s=1,v=1,c=1,r=1,C=1;AAAA\033\\" ).empty() );
+    Terminal::Framebuffer copy = graphics_terminal.get_fb();
+    Terminal::Display display( false );
+    const std::string repaint = display.new_frame( false, copy, graphics_terminal.get_fb() );
+    assert_contains( repaint, "\033_Ga=T" );
+    assert_not_contains( repaint, "\033_Ga=q" );
   }
 
   before = terminal.get_fb();

@@ -236,6 +236,17 @@ static bool clip_kitty_graphics_sequence_top( std::string& sequence, const int c
   return true;
 }
 
+void Terminal::force_kitty_graphics_cursor_policy( std::string& sequence )
+{
+  size_t start = 0, len = 0;
+  std::string control_data;
+  if ( !kitty_graphics_control_data( sequence, start, len, control_data ) ) {
+    return;
+  }
+  set_comma_arg( control_data, "C", 1 );
+  sequence.replace( start, len, control_data );
+}
+
 Cell::Cell( color_type background_color )
   : contents(), renditions( background_color ), hyperlink(), wide( false ), fallback( false ), wrap( false )
 {}
@@ -1302,7 +1313,7 @@ void Framebuffer::clear_graphics_passthrough_sequences( void )
   }
 }
 
-void Framebuffer::push_passthrough_sequence( const std::string& sequence )
+void Framebuffer::push_passthrough_sequence( const std::string& sequence, bool replayable )
 {
   if ( sequence.empty() ) {
     return;
@@ -1312,7 +1323,8 @@ void Framebuffer::push_passthrough_sequence( const std::string& sequence )
   passthrough_sequences.push_back( PassthroughSequence( passthrough_sequence_count,
                                                         ds.get_cursor_col(),
                                                         ds.get_cursor_row(),
-                                                        sequence ) );
+                                                        sequence,
+                                                        replayable ) );
 
   /* Keep recent passthrough graphics/shell-integration events bounded, while
      allowing ordinary terminal-sized direct inline images to survive until the

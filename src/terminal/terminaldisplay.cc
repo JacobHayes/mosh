@@ -45,6 +45,18 @@ static const Renditions& initial_rendition( void )
   return blank;
 }
 
+static bool frame_has_kitty_graphics( const Framebuffer& fb )
+{
+  const Framebuffer::passthrough_sequences_type& sequences = fb.get_passthrough_sequences();
+  for ( Framebuffer::passthrough_sequences_type::const_iterator it = sequences.begin(); it != sequences.end();
+        ++it ) {
+    if ( it->sequence.compare( 0, 3, "\033_G" ) == 0 ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::string Display::open() const
 {
   return std::string( smcup ? smcup : "" ) + std::string( "\033[?1h" );
@@ -137,6 +149,16 @@ std::string Display::new_frame( bool initialized, const Framebuffer& last, const
 
     /* clear screen */
     frame.append( "\033[0m\033[H\033[2J" );
+
+    /* Kitty images live in the host terminal's own image store, not in
+       the cell grid, so ESC[2J does not necessarily remove them (it does
+       in Ghostty, but that is emulator-specific).  Delete them explicitly
+       and host-agnostically before the retained placements are replayed,
+       freeing host-side image storage in the process. */
+    if ( frame_has_kitty_graphics( frame.last_frame ) || frame_has_kitty_graphics( f ) ) {
+      frame.append( "\033_Ga=d,d=A\033\\" );
+    }
+
     initialized = false;
     frame.cursor_x = frame.cursor_y = 0;
     frame.current_rendition = initial_rendition();
@@ -265,13 +287,18 @@ std::string Display::new_frame( bool initialized, const Framebuffer& last, const
     wrap = put_row( initialized, frame, f, frame_y, *rows.at( frame_y ), wrap );
   }
 
-  /* replay shell-integration and graphics pass-through events */
-  const uint64_t last_passthrough_sequence_count = initialized ? frame.last_frame.get_passthrough_sequence_count() : 0;
+  /* replay shell-integration and graphics pass-through events.  New
+     events (sequence_number past the previous frame's count) are always
+     forwarded live; on a full-frame repaint every retained *replayable*
+     event is re-emitted too (queries are forwarded but never replayed). */
+  const uint64_t prev_passthrough_sequence_count = frame.last_frame.get_passthrough_sequence_count();
   const Framebuffer::passthrough_sequences_type& passthrough_sequences = f.get_passthrough_sequences();
   for ( Framebuffer::passthrough_sequences_type::const_iterator it = passthrough_sequences.begin();
         it != passthrough_sequences.end();
         ++it ) {
-    if ( it->sequence_number > last_passthrough_sequence_count ) {
+    const bool forward_live = it->sequence_number > prev_passthrough_sequence_count;
+    const bool replay_repaint = ( !initialized ) && it->replayable;
+    if ( forward_live || replay_repaint ) {
       frame.append_move( it->cursor_row, it->cursor_col );
       frame.append_string( it->sequence );
       /* The pass-through sequence may have moved the cursor or changed modes
