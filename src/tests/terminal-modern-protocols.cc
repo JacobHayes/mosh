@@ -110,6 +110,26 @@ int main( void )
     assert_contains( frame, large_payload.substr( 0, 1024 ) );
   }
 
+  {
+    Terminal::Complete graphics_terminal( 80, 24 );
+    const std::string first_chunk( 512, 'A' );
+    const std::string middle_chunk( 512, 'B' );
+    const std::string final_chunk( 512, 'Z' );
+
+    assert( graphics_terminal.act( "\033_Ga=T,f=32,s=1,v=1,m=1\033\\" ).empty() );
+    assert( graphics_terminal.act( std::string( "\033_Gm=1;" ) + first_chunk + "\033\\" ).empty() );
+    for ( int i = 0; i < 63; i++ ) {
+      assert( graphics_terminal.act( std::string( "\033_Gm=1;" ) + middle_chunk + "\033\\" ).empty() );
+    }
+    assert( graphics_terminal.act( std::string( "\033_Gm=0;" ) + final_chunk + "\033\\" ).empty() );
+
+    assert( graphics_terminal.get_fb().get_passthrough_sequences().size() > 32 );
+    frame = frame_from( Terminal::Framebuffer( 80, 24 ), graphics_terminal.get_fb() );
+    assert_contains( frame, "\033_Ga=T,f=32,s=1,v=1,m=1\033\\" );
+    assert_contains( frame, std::string( "\033_Gm=1;" ) + first_chunk.substr( 0, 64 ) );
+    assert_contains( frame, std::string( "\033_Gm=0;" ) + final_chunk.substr( 0, 64 ) );
+  }
+
   before = terminal.get_fb();
   assert( terminal.act( "\033Pq~~~~\033\\" ).empty() );
   frame = frame_from( before, terminal.get_fb() );
