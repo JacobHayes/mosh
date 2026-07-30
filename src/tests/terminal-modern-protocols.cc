@@ -385,6 +385,36 @@ int main( void )
     assert( !has_ab );                     /* older complete groups evicted */
   }
 
+  {
+    /* Reflow translates a retained placement's anchor through rewrap
+       instead of clearing it; short lines don't rewrap so the anchor is
+       unchanged after a width shrink. */
+    Terminal::Complete graphics_terminal( 80, 24 );
+    graphics_terminal.enable_history( 1000, true );
+    assert( graphics_terminal.act( "hello\r\nworld\r\n" ).empty() );
+    assert( graphics_terminal.act( "\033_Ga=T,f=32,s=2,v=2,c=2,r=2,C=1;AAAA\033\\" ).empty() );
+    assert( graphics_terminal.get_fb().get_passthrough_sequences().size() == 1 );
+    assert( graphics_terminal.get_fb().get_passthrough_sequences().front().cursor_row == 2 );
+    assert( graphics_terminal.get_fb().get_passthrough_sequences().front().cursor_col == 0 );
+    graphics_terminal.act( Parser::Resize( 70, 24 ) );
+    assert( graphics_terminal.get_fb().get_passthrough_sequences().size() == 1 );
+    assert( graphics_terminal.get_fb().get_passthrough_sequences().front().cursor_row == 2 );
+    assert( graphics_terminal.get_fb().get_passthrough_sequences().front().cursor_col == 0 );
+  }
+
+  {
+    /* A height shrink that pushes the anchored row into scrollback drops
+       the placement entirely. */
+    Terminal::Complete graphics_terminal( 80, 24 );
+    graphics_terminal.enable_history( 1000, true );
+    assert( graphics_terminal.act( "\033[1;1H" ).empty() );
+    assert( graphics_terminal.act( "\033_Ga=T,f=32,s=2,v=2,c=2,r=2,C=1;AAAA\033\\" ).empty() );
+    assert( graphics_terminal.get_fb().get_passthrough_sequences().front().cursor_row == 0 );
+    assert( graphics_terminal.act( "\033[24;1H" ).empty() );
+    graphics_terminal.act( Parser::Resize( 80, 10 ) );
+    assert( graphics_terminal.get_fb().get_passthrough_sequences().empty() );
+  }
+
   before = terminal.get_fb();
   assert( terminal.act( "\033Pq~~~~\033\\" ).empty() );
   frame = frame_from( before, terminal.get_fb() );

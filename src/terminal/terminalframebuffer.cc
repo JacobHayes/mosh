@@ -805,7 +805,6 @@ void Framebuffer::resize( int s_width, int s_height )
      result overwrites whatever the legacy path produces. */
   if ( history && history->capture_enabled() && !alt_screen_active ) {
     reflow( s_width, s_height );
-    clear_graphics_passthrough_sequences();
     return;
   }
 
@@ -847,7 +846,9 @@ void Framebuffer::resize( int s_width, int s_height )
 
 /* Re-wrap a sequence of rows (each at its own original width, linked
    by wrap flags) to a new width, translating a cursor position given
-   in `work` coordinates. */
+   in `work` coordinates.  Any additional `anchor_work` points (also in
+   `work` coordinates) are translated the same way into `anchor_out`;
+   points that fall outside `work` land at (-1, -1). */
 static void rewrap_rows( const std::deque<Framebuffer::row_pointer>& work,
                          int cursor_work_row,
                          int cursor_work_col,
@@ -855,11 +856,16 @@ static void rewrap_rows( const std::deque<Framebuffer::row_pointer>& work,
                          color_type bg,
                          std::vector<Framebuffer::row_pointer>& out,
                          int* cursor_row,
-                         int* cursor_col )
+                         int* cursor_col,
+                         const std::vector<std::pair<int, int>>* anchor_work = NULL,
+                         std::vector<std::pair<int, int>>* anchor_out = NULL )
 {
   out.clear();
   *cursor_row = 0;
   *cursor_col = 0;
+  if ( anchor_out ) {
+    anchor_out->assign( anchor_work ? anchor_work->size() : 0, std::make_pair( -1, -1 ) );
+  }
 
   std::shared_ptr<Row> cur = std::make_shared<Row>( width, bg );
   int col = 0;
@@ -889,6 +895,13 @@ static void rewrap_rows( const std::deque<Framebuffer::row_pointer>& work,
         *cursor_row = (int)out.size();
         *cursor_col = col;
       }
+      if ( anchor_work ) {
+        for ( size_t a = 0; a < anchor_work->size(); a++ ) {
+          if ( ( (int)r == ( *anchor_work )[a].first ) && ( c == ( *anchor_work )[a].second ) ) {
+            ( *anchor_out )[a] = std::make_pair( (int)out.size(), col );
+          }
+        }
+      }
       cur->cells.at( col ) = cell;
       col++;
     }
@@ -896,6 +909,14 @@ static void rewrap_rows( const std::deque<Framebuffer::row_pointer>& work,
       /* cursor on the blank tail of the row */
       *cursor_row = (int)out.size();
       *cursor_col = std::min( col + ( cursor_work_col - extent ), width - 1 );
+    }
+    if ( anchor_work ) {
+      for ( size_t a = 0; a < anchor_work->size(); a++ ) {
+        if ( ( (int)r == ( *anchor_work )[a].first ) && ( ( *anchor_work )[a].second >= extent ) ) {
+          const int acol = std::min( col + ( ( *anchor_work )[a].second - extent ), width - 1 );
+          ( *anchor_out )[a] = std::make_pair( (int)out.size(), acol );
+        }
+      }
     }
     if ( !src_wrap || ( r == work.size() - 1 ) ) {
       close_row( src_wrap );
@@ -922,14 +943,47 @@ void Framebuffer::reflow( int s_width, int s_height )
   const bool was_full = ( used == oldheight );
 
   std::deque<row_pointer> work( rows.begin(), rows.begin() + used );
-  int cursor_work_row = ds.get_cursor_row();
+  const int orig_cursor_row = ds.get_cursor_row();
+  int cursor_work_row = orig_cursor_row;
   const int cursor_work_col = ds.get_cursor_col();
   const color_type bg = ds.get_background_rendition();
 
+  /* Retained graphics placements are anchored to a screen (row, col);
+     translate those anchors through the same rewrap that moves the
+     cursor, so images follow their content instead of being cleared.
+     A chunk group's thousands of chunks all share one anchor, so
+     translate only distinct anchor points and map each sequence to its
+     own. */
+  std::vector<size_t> graphics_idx;
+  std::vector<size_t> graphics_anchor; /* per graphics seq -> index into anchor_screen */
+  std::vector<std::pair<int, int>> anchor_screen;
+  for ( size_t i = 0; i < passthrough_sequences.size(); i++ ) {
+    if ( passthrough_sequence_is_graphics( passthrough_sequences[i].sequence ) ) {
+      const std::pair<int, int> anchor(
+        passthrough_sequences[i].cursor_row, passthrough_sequences[i].cursor_col );
+      size_t a = 0;
+      while ( a < anchor_screen.size() && anchor_screen[a] != anchor ) {
+        a++;
+      }
+      if ( a == anchor_screen.size() ) {
+        anchor_screen.push_back( anchor );
+      }
+      graphics_idx.push_back( i );
+      graphics_anchor.push_back( a );
+    }
+  }
+
   std::vector<row_pointer> wrapped;
+  std::vector<std::pair<int, int>> anchor_work, anchor_out;
   int new_row = 0, new_col = 0;
   for ( ;; ) {
-    rewrap_rows( work, cursor_work_row, cursor_work_col, s_width, bg, wrapped, &new_row, &new_col );
+    const int pull_offset = cursor_work_row - orig_cursor_row;
+    anchor_work.clear();
+    for ( size_t a = 0; a < anchor_screen.size(); a++ ) {
+      anchor_work.push_back( std::make_pair( anchor_screen[a].first + pull_offset, anchor_screen[a].second ) );
+    }
+    rewrap_rows(
+      work, cursor_work_row, cursor_work_col, s_width, bg, wrapped, &new_row, &new_col, &anchor_work, &anchor_out );
     if ( !was_full || (int)wrapped.size() >= s_height ) {
       break;
     }
@@ -942,11 +996,13 @@ void Framebuffer::reflow( int s_width, int s_height )
   }
 
   /* bottom-anchor: rows that no longer fit scroll off the top into history */
+  int removed_from_top = 0;
   int overflow = (int)wrapped.size() - s_height;
   if ( overflow > 0 ) {
     if ( overflow > new_row ) {
       overflow = new_row; /* never push the cursor off the screen */
     }
+    removed_from_top = overflow;
     for ( int i = 0; i < overflow; i++ ) {
       history->append_row( wrapped.at( i ), s_width );
     }
@@ -956,6 +1012,38 @@ void Framebuffer::reflow( int s_width, int s_height )
   if ( (int)wrapped.size() > s_height ) {
     /* content below the cursor still doesn't fit; drop it */
     wrapped.resize( s_height );
+  }
+
+  /* Rebuild the retained sequences: graphics placements move to their
+     translated anchors and drop if scrolled into history or off-screen
+     (a chunk group shares one anchor, so its chunks move or drop as a
+     unit); non-graphics passthroughs are left untouched, as before. */
+  {
+    passthrough_sequences_type kept;
+    kept.reserve( passthrough_sequences.size() );
+    size_t g = 0;
+    for ( size_t i = 0; i < passthrough_sequences.size(); i++ ) {
+      if ( g < graphics_idx.size() && graphics_idx[g] == i ) {
+        const std::pair<int, int>& translated = anchor_out[graphics_anchor[g]];
+        int arow = translated.first;
+        const int acol = translated.second;
+        g++;
+        if ( arow < 0 ) {
+          continue; /* anchor was off the reflowed content */
+        }
+        arow -= removed_from_top;
+        if ( arow < 0 || arow >= s_height ) {
+          continue; /* scrolled into history or below the visible screen */
+        }
+        PassthroughSequence seq = passthrough_sequences[i];
+        seq.cursor_row = arow;
+        seq.cursor_col = acol;
+        kept.push_back( seq );
+      } else {
+        kept.push_back( passthrough_sequences[i] );
+      }
+    }
+    passthrough_sequences.swap( kept );
   }
 
   ds.resize( s_width, s_height );
