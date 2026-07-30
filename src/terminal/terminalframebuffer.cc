@@ -284,7 +284,8 @@ DrawState::DrawState( int s_width, int s_height )
 
 Framebuffer::Framebuffer( int s_width, int s_height )
   : rows(), icon_name(), window_title(), clipboard(), bell_count( 0 ), title_initialized( false ),
-    passthrough_sequence_count( 0 ), passthrough_sequences(), history(), history_row_count( 0 ),
+    passthrough_sequence_count( 0 ), passthrough_sequences(), discard_unterminated_chunks( false ), history(),
+    history_row_count( 0 ),
     history_clear_count( 0 ), history_truncate_count( 0 ), saved_primary_rows(), primary_saved_cursor(),
     alt_screen_active( false ), altscreen_enabled( false ), ds( s_width, s_height )
 {
@@ -299,7 +300,8 @@ Framebuffer::Framebuffer( const Framebuffer& other )
   : rows( other.rows ), icon_name( other.icon_name ), window_title( other.window_title ),
     clipboard( other.clipboard ), bell_count( other.bell_count ), title_initialized( other.title_initialized ),
     passthrough_sequence_count( other.passthrough_sequence_count ),
-    passthrough_sequences( other.passthrough_sequences ), history( other.history ),
+    passthrough_sequences( other.passthrough_sequences ),
+    discard_unterminated_chunks( other.discard_unterminated_chunks ), history( other.history ),
     history_row_count( other.history_row_count ), history_clear_count( other.history_clear_count ),
     history_truncate_count( other.history_truncate_count ), saved_primary_rows( other.saved_primary_rows ),
     primary_saved_cursor( other.primary_saved_cursor ),
@@ -317,6 +319,7 @@ Framebuffer& Framebuffer::operator=( const Framebuffer& other )
     title_initialized = other.title_initialized;
     passthrough_sequence_count = other.passthrough_sequence_count;
     passthrough_sequences = other.passthrough_sequences;
+    discard_unterminated_chunks = other.discard_unterminated_chunks;
     history = other.history;
     history_row_count = other.history_row_count;
     history_clear_count = other.history_clear_count;
@@ -1319,6 +1322,21 @@ void Framebuffer::push_passthrough_sequence( const std::string& sequence, bool r
     return;
   }
 
+  if ( discard_unterminated_chunks ) {
+    size_t start = 0, len = 0;
+    std::string control_data;
+    if ( kitty_graphics_control_data( sequence, start, len, control_data )
+         && kitty_control_data_only_m_or_q( control_data ) ) {
+      /* remaining chunk of the oversized group we already gave up on */
+      if ( kitty_graphics_sequence_finishes_chunk( sequence ) ) {
+        discard_unterminated_chunks = false;
+      }
+      return;
+    }
+    /* any other event means the abandoned group will never finish */
+    discard_unterminated_chunks = false;
+  }
+
   passthrough_sequence_count++;
   passthrough_sequences.push_back( PassthroughSequence( passthrough_sequence_count,
                                                         ds.get_cursor_col(),
@@ -1339,9 +1357,49 @@ void Framebuffer::push_passthrough_sequence( const std::string& sequence, bool r
     bytes += it->sequence.size();
   }
 
+  /* Evict whole chunk groups from the front (a group = a starts-chunk
+     sequence through its m=0 finisher, or a standalone sequence).
+     Never break a group by evicting only some of its chunks, and never
+     evict the newest group while it is still in progress (unterminated):
+     the caps become soft until another group exists or it completes. */
   while ( passthrough_sequences.size() > MAX_PASSTHROUGH_SEQUENCES || bytes > MAX_PASSTHROUGH_BYTES ) {
-    bytes -= passthrough_sequences.front().sequence.size();
-    passthrough_sequences.erase( passthrough_sequences.begin() );
+    size_t group_len = 1;
+    if ( kitty_graphics_sequence_starts_chunk( passthrough_sequences.front().sequence ) ) {
+      group_len = passthrough_sequences.size();
+      for ( size_t i = 1; i < passthrough_sequences.size(); i++ ) {
+        if ( kitty_graphics_sequence_finishes_chunk( passthrough_sequences[i].sequence ) ) {
+          group_len = i + 1;
+          break;
+        }
+      }
+      /* An unterminated leading group is the still-in-progress newest
+         group; leave it and let the caps run soft until it completes. */
+      if ( group_len == passthrough_sequences.size()
+           && !kitty_graphics_sequence_finishes_chunk( passthrough_sequences.back().sequence ) ) {
+        break;
+      }
+    }
+
+    for ( size_t i = 0; i < group_len; i++ ) {
+      bytes -= passthrough_sequences.front().sequence.size();
+      passthrough_sequences.erase( passthrough_sequences.begin() );
+    }
+  }
+
+  /* The soft cap must not let a chunk group that never terminates grow
+     retention without bound.  Past a hard ceiling, give up on the group:
+     drop its retained chunks, close the host-side transmission with a
+     quiet finisher (chunks already forwarded live have opened one), and
+     discard the group's remaining chunks as they arrive. */
+  static const size_t MAX_UNTERMINATED_GROUP_BYTES = 8 * MAX_PASSTHROUGH_BYTES;
+  if ( bytes > MAX_UNTERMINATED_GROUP_BYTES && !passthrough_sequences.empty()
+       && kitty_graphics_sequence_starts_chunk( passthrough_sequences.front().sequence )
+       && !kitty_graphics_sequence_finishes_chunk( passthrough_sequences.back().sequence ) ) {
+    passthrough_sequences.clear();
+    discard_unterminated_chunks = true;
+    passthrough_sequence_count++;
+    passthrough_sequences.push_back( PassthroughSequence(
+      passthrough_sequence_count, ds.get_cursor_col(), ds.get_cursor_row(), "\033_Gq=2,m=0;\033\\", false ) );
   }
 }
 

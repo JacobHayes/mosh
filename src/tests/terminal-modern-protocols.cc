@@ -223,6 +223,26 @@ int main( void )
   }
 
   {
+    /* A chunk group that never terminates cannot grow retention without
+       bound: past the hard ceiling the group is dropped, replaced by a
+       quiet finisher for the host, and its later chunks are discarded. */
+    Terminal::Framebuffer fb( 80, 24 );
+    fb.push_passthrough_sequence( "\033_Ga=T,f=32,s=1,v=1,m=1\033\\" );
+    const std::string continuation = std::string( "\033_Gm=1;" ) + std::string( 1024 * 1024, 'A' ) + "\033\\";
+    for ( int i = 0; i < 33; i++ ) {
+      fb.push_passthrough_sequence( continuation );
+    }
+    assert( fb.get_passthrough_sequences().size() == 1 );
+    assert_contains( fb.get_passthrough_sequences().front().sequence, "q=2,m=0" );
+    fb.push_passthrough_sequence( continuation );
+    assert( fb.get_passthrough_sequences().size() == 1 );
+    fb.push_passthrough_sequence( "\033_Gm=0;BBBB\033\\" ); /* the group's real finisher */
+    assert( fb.get_passthrough_sequences().size() == 1 );
+    fb.push_passthrough_sequence( "\033_Ga=T,c=1,r=1,C=1;AAAA\033\\" ); /* retention works again */
+    assert( fb.get_passthrough_sequences().size() == 2 );
+  }
+
+  {
     Terminal::Complete graphics_terminal( 80, 10 );
     assert( graphics_terminal.act( "\033_Ga=T,c=1,r=1,C=1;AAAA\033\\" ).empty() );
     assert( graphics_terminal.act( "\033_Ga=d\033\\" ).empty() );
@@ -289,6 +309,80 @@ int main( void )
     const std::string repaint = display.new_frame( false, copy, graphics_terminal.get_fb() );
     assert_contains( repaint, "\033_Ga=T" );
     assert_not_contains( repaint, "\033_Ga=q" );
+  }
+
+  {
+    /* Eviction is chunk-group-atomic: completed groups are dropped whole
+       from the front, never leaving orphaned continuation chunks. */
+    const size_t chunk = 512 * 1024;
+    auto push_group = []( Terminal::Complete& t, char payload, int mid_chunks ) {
+      assert( t.act( "\033_Ga=T,f=32,s=1,v=1,m=1\033\\" ).empty() );
+      for ( int i = 0; i < mid_chunks; i++ ) {
+        assert( t.act( std::string( "\033_Gm=1;" ) + std::string( 512 * 1024, payload ) + "\033\\" ).empty() );
+      }
+      assert( t.act( std::string( "\033_Gm=0;" ) + std::string( 512 * 1024, payload ) + "\033\\" ).empty() );
+    };
+
+    Terminal::Complete graphics_terminal( 80, 24 );
+    push_group( graphics_terminal, 'A', 2 ); /* ~1.5 MiB each */
+    push_group( graphics_terminal, 'B', 2 );
+    push_group( graphics_terminal, 'C', 2 ); /* total ~4.5 MiB > 4 MiB cap */
+
+    const Terminal::Framebuffer::passthrough_sequences_type& seqs
+      = graphics_terminal.get_fb().get_passthrough_sequences();
+    assert( !seqs.empty() );
+    assert_contains( seqs.front().sequence, "a=T" ); /* front starts a group */
+    size_t total = 0;
+    bool has_a = false;
+    for ( const auto& s : seqs ) {
+      total += s.sequence.size();
+      if ( s.sequence.find( std::string( 512, 'A' ) ) != std::string::npos ) {
+        has_a = true;
+      }
+    }
+    assert( total <= 4u * 1024 * 1024 );
+    assert( !has_a ); /* the oldest group was evicted whole */
+    (void)chunk;
+  }
+
+  {
+    /* An in-progress (unterminated) group is never partially evicted:
+       older complete groups go first and the caps run soft until it
+       finishes. */
+    Terminal::Complete graphics_terminal( 80, 24 );
+    auto push_group = []( Terminal::Complete& t, char payload, int mid_chunks ) {
+      assert( t.act( "\033_Ga=T,f=32,s=1,v=1,m=1\033\\" ).empty() );
+      for ( int i = 0; i < mid_chunks; i++ ) {
+        assert( t.act( std::string( "\033_Gm=1;" ) + std::string( 512 * 1024, payload ) + "\033\\" ).empty() );
+      }
+      assert( t.act( std::string( "\033_Gm=0;" ) + std::string( 512 * 1024, payload ) + "\033\\" ).empty() );
+    };
+    push_group( graphics_terminal, 'A', 2 );
+    push_group( graphics_terminal, 'B', 2 );
+    /* Open a third group over 4 MiB and leave it unterminated. */
+    assert( graphics_terminal.act( "\033_Ga=T,f=32,s=1,v=1,m=1\033\\" ).empty() );
+    const int c_chunks = 8;
+    for ( int i = 0; i < c_chunks; i++ ) {
+      const std::string c_chunk = std::string( "\033_Gm=1;" ) + std::string( 512 * 1024, 'C' ) + "\033\\";
+      assert( graphics_terminal.act( c_chunk ).empty() );
+    }
+
+    const Terminal::Framebuffer::passthrough_sequences_type& seqs
+      = graphics_terminal.get_fb().get_passthrough_sequences();
+    assert_contains( seqs.front().sequence, "a=T" );
+    size_t c_count = 0;
+    bool has_ab = false;
+    for ( const auto& s : seqs ) {
+      if ( s.sequence.find( std::string( 512, 'C' ) ) != std::string::npos ) {
+        c_count++;
+      }
+      if ( s.sequence.find( std::string( 512, 'A' ) ) != std::string::npos
+           || s.sequence.find( std::string( 512, 'B' ) ) != std::string::npos ) {
+        has_ab = true;
+      }
+    }
+    assert( c_count == (size_t)c_chunks ); /* in-progress group kept every chunk */
+    assert( !has_ab );                     /* older complete groups evicted */
   }
 
   before = terminal.get_fb();

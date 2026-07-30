@@ -500,6 +500,9 @@ private:
   bool title_initialized; /* true if the window title has been set via an OSC */
   uint64_t passthrough_sequence_count;
   passthrough_sequences_type passthrough_sequences;
+  /* true after an oversized never-terminated chunk group is dropped;
+     the group's remaining chunks are discarded as they arrive */
+  bool discard_unterminated_chunks;
 
   /* Scrollback history.  The ring is shared among all Framebuffer
      copies held by the transport; the counters are per-state
