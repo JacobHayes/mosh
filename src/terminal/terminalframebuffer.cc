@@ -1485,6 +1485,7 @@ void Framebuffer::apply_graphics_sync( const std::string& apc )
     int row, col;
     bool has_control;
     std::string control;
+    Entry() : first( 0 ), last( 0 ), row( 0 ), col( 0 ), has_control( false ), control() {}
   };
   std::vector<Entry> entries;
 
