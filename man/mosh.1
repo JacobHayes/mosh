@@ -116,14 +116,11 @@ An alternate ssh port can be specified with, \fIe.g.\fP, \-\-ssh="ssh \-p 2222".
 
 .TP
 .B \-\-server\-term=\fITERM\fP
-Terminal type to advertise to applications on the server. By default,
-\fBmosh\fP forwards the client's \fBTERM\fP value. The same setting can be
+Override the terminal type advertised to applications on the server. By default,
+\fBmosh\fP forwards the client's \fBTERM\fP value. The same override can be
 supplied with the \fBMOSH_SERVER_TERM\fP environment variable. Use
-\fB--server-term=xterm-256color\fP, or another explicit terminal type, to
-override the forwarded value.
-
-Forwarding the client terminal type helps applications select modern terminal
-features, but it may require the corresponding terminfo entry on the server.
+\fB--server-term=xterm-256color\fP, or another explicit terminal type, if the
+server lacks the client's terminfo entry or an application misbehaves.
 
 .TP
 .B \-\-ssh-pty\fP

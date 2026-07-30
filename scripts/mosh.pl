@@ -79,7 +79,7 @@ my @ssh = ('ssh');
 
 my $term_init = 1;
 
-my $server_term = exists $ENV{ 'MOSH_SERVER_TERM' } ? $ENV{ 'MOSH_SERVER_TERM' } : 'client';
+my $server_term = exists $ENV{ 'MOSH_SERVER_TERM' } ? $ENV{ 'MOSH_SERVER_TERM' } : $ENV{ 'TERM' };
 
 my $localhost = undef;
 
@@ -96,9 +96,9 @@ qq{Usage: $0 [options] [--] [user@]host [command...]
                                 (default: "mosh-client")
         --server=COMMAND     mosh server on remote machine
                                 (default: "mosh-server")
-        --server-term=TERM   terminal type to advertise on the server
+        --server-term=TERM   override terminal type advertised on the server
                                 (default: local TERM; use xterm-256color
-                                for Mosh's historical default)
+                                for historical compatibility)
 
         --predict=adaptive      local echo for slower links [default]
 -a      --predict=always        use local echo even on fast links
@@ -242,12 +242,6 @@ if ( defined $port_request ) {
 delete $ENV{ 'MOSH_PREDICTION_DISPLAY' };
 
 if ( defined $server_term ) {
-  if ( lc( $server_term ) eq 'client' ) {
-    die "$0: client terminal type requested, but TERM is not set.\n"
-      unless defined $ENV{ 'TERM' };
-    $server_term = $ENV{ 'TERM' };
-  }
-
   if ( length $server_term ) {
     my $safe_server_term = sanitize_terminal_type( $server_term );
     die "$0: terminal type \"$server_term\" is not a safe terminfo name.\n"
