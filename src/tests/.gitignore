@@ -8,3 +8,7 @@
 /*.d/
 *.log
 *.trs
+/terminal-appearance
+/terminal-color-query
+/terminal-modern-protocols
+/terminal-queries
