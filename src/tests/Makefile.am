@@ -39,8 +39,8 @@ displaytests = \
 	unicode-later-combining.test \
 	window-resize.test
 
-check_PROGRAMS = ocb-aes encrypt-decrypt base64 nonce-incr inpty is-utf8-locale terminal-color-query terminal-appearance terminal-queries
-TESTS = ocb-aes encrypt-decrypt base64 nonce-incr terminal-color-query terminal-appearance terminal-queries local.test $(displaytests)
+check_PROGRAMS = ocb-aes encrypt-decrypt base64 nonce-incr inpty is-utf8-locale terminal-color-query terminal-appearance terminal-queries terminal-modern-protocols
+TESTS = ocb-aes encrypt-decrypt base64 nonce-incr terminal-color-query terminal-appearance terminal-queries terminal-modern-protocols local.test $(displaytests)
 XFAIL_TESTS = \
 	e2e-failure.test \
 	emulation-attributes-256color8.test
@@ -83,6 +83,10 @@ terminal_appearance_LDADD = ../statesync/libmoshstatesync.a ../terminal/libmosht
 
 terminal_queries_SOURCES = terminal-queries.cc
 terminal_queries_LDADD = ../statesync/libmoshstatesync.a ../terminal/libmoshterminal.a \
+	../protobufs/libmoshprotos.a ../util/libmoshutil.a $(protobuf_LIBS) $(TINFO_LIBS)
+
+terminal_modern_protocols_SOURCES = terminal-modern-protocols.cc
+terminal_modern_protocols_LDADD = ../statesync/libmoshstatesync.a ../terminal/libmoshterminal.a \
 	../protobufs/libmoshprotos.a ../util/libmoshutil.a $(protobuf_LIBS) $(TINFO_LIBS)
 
 clean-local: clean-local-check
