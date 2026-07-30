@@ -618,6 +618,14 @@ static Function func_Ctrl_BEL( CONTROL, "\x07", Ctrl_BEL );
 struct SGRParam
 {
   std::vector<int> subparams;
+
+  SGRParam()
+    : subparams()
+  {}
+
+  explicit SGRParam( const std::vector<int>& s_subparams )
+    : subparams( s_subparams )
+  {}
 };
 
 static bool parse_unsigned_param( const std::string& str, const size_t begin, const size_t end, int& value )
@@ -966,7 +974,7 @@ static bool parse_8bit_bytes( const std::vector<wchar_t>& chars, std::string& st
 {
   str.reserve( chars.size() );
   for ( wchar_t wide_char : chars ) {
-    if ( wide_char < 0 || wide_char > 255 ) {
+    if ( static_cast<unsigned long>( wide_char ) > 255 ) {
       return false;
     }
     str.append( 1, static_cast<char>( wide_char ) );
