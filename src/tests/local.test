@@ -8,14 +8,14 @@ fi
 
 set -eu
 out=$(
-    TERM=xterm \
+    TERM=vt100 \
         ./inpty \
         ../../scripts/mosh \
         --client="../frontend/mosh-client" \
         --server="$PWD/../frontend/mosh-server" \
         --local --bind-server=127.0.0.1 127.0.0.1 \
-        -- printf 'he%s\n' llo)
+        -- sh -c 'printf "he%s\nTERM=%s\n" llo "$TERM"')
 case "$out" in
-    *hello*) exit 0;;
+    *hello*TERM=vt100*) exit 0;;
     *) exit 1;;
 esac

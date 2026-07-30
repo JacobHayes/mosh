@@ -79,7 +79,7 @@ my @ssh = ('ssh');
 
 my $term_init = 1;
 
-my $server_term = $ENV{ 'MOSH_SERVER_TERM' };
+my $server_term = exists $ENV{ 'MOSH_SERVER_TERM' } ? $ENV{ 'MOSH_SERVER_TERM' } : 'client';
 
 my $localhost = undef;
 
@@ -96,9 +96,9 @@ qq{Usage: $0 [options] [--] [user@]host [command...]
                                 (default: "mosh-client")
         --server=COMMAND     mosh server on remote machine
                                 (default: "mosh-server")
-        --server-term=TERM   terminal type to advertise on the server;
-                                use "client" to forward local TERM
-                                (default: xterm or xterm-256color)
+        --server-term=TERM   terminal type to advertise on the server
+                                (default: local TERM; use xterm-256color
+                                for Mosh's historical default)
 
         --predict=adaptive      local echo for slower links [default]
 -a      --predict=always        use local echo even on fast links
@@ -243,7 +243,7 @@ delete $ENV{ 'MOSH_PREDICTION_DISPLAY' };
 
 if ( defined $server_term ) {
   if ( lc( $server_term ) eq 'client' ) {
-    die "$0: --server-term=client requested, but TERM is not set.\n"
+    die "$0: client terminal type requested, but TERM is not set.\n"
       unless defined $ENV{ 'TERM' };
     $server_term = $ENV{ 'TERM' };
   }
