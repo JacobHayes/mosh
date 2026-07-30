@@ -69,16 +69,17 @@ DrawState::DrawState( int s_width, int s_height )
     origin_mode( false ), auto_wrap_mode( true ), insert_mode( false ), cursor_visible( true ),
     cursor_blink( true ), cursor_shape( CURSOR_SHAPE_DEFAULT ), cursor_color(), reverse_video( false ),
     bracketed_paste( false ), mouse_reporting_mode( MOUSE_REPORTING_NONE ),
-    mouse_focus_event( false ), mouse_alternate_scroll( false ), mouse_encoding_mode( MOUSE_ENCODING_DEFAULT ),
-    application_mode_cursor_keys( false )
+    mouse_focus_event( false ), mouse_alternate_scroll( false ), modify_other_keys( 0 ), kitty_keyboard_flags( 0 ),
+    kitty_keyboard_stack(), mouse_encoding_mode( MOUSE_ENCODING_DEFAULT ), application_mode_cursor_keys( false )
 {
   reinitialize_tabs( 0 );
 }
 
 Framebuffer::Framebuffer( int s_width, int s_height )
-  : rows(), icon_name(), window_title(), clipboard(), bell_count( 0 ), title_initialized( false ), history(),
-    history_row_count( 0 ), history_clear_count( 0 ), history_truncate_count( 0 ), saved_primary_rows(),
-    primary_saved_cursor(), alt_screen_active( false ), altscreen_enabled( false ), ds( s_width, s_height )
+  : rows(), icon_name(), window_title(), clipboard(), bell_count( 0 ), title_initialized( false ),
+    passthrough_sequence_count( 0 ), passthrough_sequences(), history(), history_row_count( 0 ),
+    history_clear_count( 0 ), history_truncate_count( 0 ), saved_primary_rows(), primary_saved_cursor(),
+    alt_screen_active( false ), altscreen_enabled( false ), ds( s_width, s_height )
 {
   assert( s_height > 0 );
   assert( s_width > 0 );
@@ -90,9 +91,11 @@ Framebuffer::Framebuffer( int s_width, int s_height )
 Framebuffer::Framebuffer( const Framebuffer& other )
   : rows( other.rows ), icon_name( other.icon_name ), window_title( other.window_title ),
     clipboard( other.clipboard ), bell_count( other.bell_count ), title_initialized( other.title_initialized ),
-    history( other.history ), history_row_count( other.history_row_count ),
-    history_clear_count( other.history_clear_count ), history_truncate_count( other.history_truncate_count ),
-    saved_primary_rows( other.saved_primary_rows ), primary_saved_cursor( other.primary_saved_cursor ),
+    passthrough_sequence_count( other.passthrough_sequence_count ),
+    passthrough_sequences( other.passthrough_sequences ), history( other.history ),
+    history_row_count( other.history_row_count ), history_clear_count( other.history_clear_count ),
+    history_truncate_count( other.history_truncate_count ), saved_primary_rows( other.saved_primary_rows ),
+    primary_saved_cursor( other.primary_saved_cursor ),
     alt_screen_active( other.alt_screen_active ), altscreen_enabled( other.altscreen_enabled ), ds( other.ds )
 {}
 
@@ -105,6 +108,8 @@ Framebuffer& Framebuffer::operator=( const Framebuffer& other )
     clipboard = other.clipboard;
     bell_count = other.bell_count;
     title_initialized = other.title_initialized;
+    passthrough_sequence_count = other.passthrough_sequence_count;
+    passthrough_sequences = other.passthrough_sequences;
     history = other.history;
     history_row_count = other.history_row_count;
     history_clear_count = other.history_clear_count;
@@ -495,6 +500,9 @@ void Framebuffer::soft_reset( void )
   ds.cursor_blink = true;
   ds.cursor_shape = DrawState::CURSOR_SHAPE_DEFAULT;
   ds.application_mode_cursor_keys = false;
+  ds.modify_other_keys = 0;
+  ds.kitty_keyboard_flags = 0;
+  ds.kitty_keyboard_stack.clear();
   ds.set_scrolling_region( 0, ds.get_height() - 1 );
   ds.add_rendition( 0 );
   ds.set_hyperlink( Hyperlink() );
@@ -1004,6 +1012,33 @@ void Framebuffer::prefix_window_title( const title_type& s )
     icon_name.insert( icon_name.begin(), s.begin(), s.end() );
   }
   window_title.insert( window_title.begin(), s.begin(), s.end() );
+}
+
+void Framebuffer::push_passthrough_sequence( const std::string& sequence )
+{
+  if ( sequence.empty() ) {
+    return;
+  }
+
+  passthrough_sequence_count++;
+  passthrough_sequences.push_back( PassthroughSequence( passthrough_sequence_count,
+                                                        ds.get_cursor_col(),
+                                                        ds.get_cursor_row(),
+                                                        sequence ) );
+
+  static const size_t MAX_PASSTHROUGH_SEQUENCES = 32;
+  static const size_t MAX_PASSTHROUGH_BYTES = 512 * 1024;
+  size_t bytes = 0;
+  for ( passthrough_sequences_type::const_iterator it = passthrough_sequences.begin();
+        it != passthrough_sequences.end();
+        ++it ) {
+    bytes += it->sequence.size();
+  }
+
+  while ( passthrough_sequences.size() > MAX_PASSTHROUGH_SEQUENCES || bytes > MAX_PASSTHROUGH_BYTES ) {
+    bytes -= passthrough_sequences.front().sequence.size();
+    passthrough_sequences.erase( passthrough_sequences.begin() );
+  }
 }
 
 std::string Cell::debug_contents( void ) const

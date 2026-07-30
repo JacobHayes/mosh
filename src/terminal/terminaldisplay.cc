@@ -53,6 +53,7 @@ std::string Display::open() const
 std::string Display::close() const
 {
   return std::string( "\033[?1l\033[0m\033[?25h\033[0 q\033]112\007"
+                      "\033[>4;0m\033[=0;1u"
                       "\033[?1003l\033[?1002l\033[?1001l\033[?1000l"
                       "\033[?1015l\033[?1006l\033[?1005l" )
          + std::string( rmcup ? rmcup : "" );
@@ -264,6 +265,22 @@ std::string Display::new_frame( bool initialized, const Framebuffer& last, const
     wrap = put_row( initialized, frame, f, frame_y, *rows.at( frame_y ), wrap );
   }
 
+  /* replay zero-width shell-integration and graphics pass-through events */
+  const uint64_t last_passthrough_sequence_count = initialized ? frame.last_frame.get_passthrough_sequence_count() : 0;
+  const Framebuffer::passthrough_sequences_type& passthrough_sequences = f.get_passthrough_sequences();
+  for ( Framebuffer::passthrough_sequences_type::const_iterator it = passthrough_sequences.begin();
+        it != passthrough_sequences.end();
+        ++it ) {
+    if ( it->sequence_number > last_passthrough_sequence_count ) {
+      frame.append_move( it->cursor_row, it->cursor_col );
+      frame.append_string( it->sequence );
+      /* The pass-through sequence may have moved the cursor or changed modes
+         outside mosh's model; force the normal frame footer to reassert them. */
+      frame.cursor_x = -1;
+      frame.cursor_y = -1;
+    }
+  }
+
   /* has cursor location changed? */
   if ( ( !initialized ) || ( f.ds.get_cursor_row() != frame.cursor_y )
        || ( f.ds.get_cursor_col() != frame.cursor_x ) ) {
@@ -308,6 +325,18 @@ std::string Display::new_frame( bool initialized, const Framebuffer& last, const
   /* has bracketed paste mode changed? */
   if ( ( !initialized ) || ( f.ds.bracketed_paste != frame.last_frame.ds.bracketed_paste ) ) {
     frame.append( f.ds.bracketed_paste ? "\033[?2004h" : "\033[?2004l" );
+  }
+
+  /* has xterm modifyOtherKeys mode changed? */
+  if ( ( !initialized ) || ( f.ds.modify_other_keys != frame.last_frame.ds.modify_other_keys ) ) {
+    snprintf( tmp, sizeof( tmp ), "\033[>4;%dm", f.ds.modify_other_keys );
+    frame.append( tmp );
+  }
+
+  /* have kitty keyboard protocol flags changed? */
+  if ( ( !initialized ) || ( f.ds.kitty_keyboard_flags != frame.last_frame.ds.kitty_keyboard_flags ) ) {
+    snprintf( tmp, sizeof( tmp ), "\033[=%d;1u", f.ds.kitty_keyboard_flags );
+    frame.append( tmp );
   }
 
   /* has mouse reporting mode changed? */

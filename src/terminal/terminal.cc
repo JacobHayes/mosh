@@ -169,6 +169,11 @@ void Emulator::DCS_unhook( const Parser::Unhook* act )
   dispatch.DCS_dispatch( act, &fb );
 }
 
+void Emulator::APC_end( const Parser::APC_End* act )
+{
+  dispatch.APC_dispatch( act, &fb );
+}
+
 void Emulator::OSC_end( const Parser::OSC_End* act )
 {
   dispatch.OSC_dispatch( act, &fb );

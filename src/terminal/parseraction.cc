@@ -88,6 +88,21 @@ void Unhook::act_on_terminal( Terminal::Emulator* emu ) const
   emu->DCS_unhook( this );
 }
 
+void APC_Start::act_on_terminal( Terminal::Emulator* emu ) const
+{
+  emu->dispatch.APC_start( this );
+}
+
+void APC_Put::act_on_terminal( Terminal::Emulator* emu ) const
+{
+  emu->dispatch.APC_put( this );
+}
+
+void APC_End::act_on_terminal( Terminal::Emulator* emu ) const
+{
+  emu->APC_end( this );
+}
+
 void OSC_Put::act_on_terminal( Terminal::Emulator* emu ) const
 {
   emu->dispatch.OSC_put( this );

@@ -57,6 +57,9 @@ class Emulator
   friend void Parser::Hook::act_on_terminal( Emulator* ) const;
   friend void Parser::Put::act_on_terminal( Emulator* ) const;
   friend void Parser::Unhook::act_on_terminal( Emulator* ) const;
+  friend void Parser::APC_Start::act_on_terminal( Emulator* ) const;
+  friend void Parser::APC_Put::act_on_terminal( Emulator* ) const;
+  friend void Parser::APC_End::act_on_terminal( Emulator* ) const;
   friend void Parser::OSC_Start::act_on_terminal( Emulator* ) const;
   friend void Parser::OSC_Put::act_on_terminal( Emulator* ) const;
   friend void Parser::OSC_End::act_on_terminal( Emulator* ) const;
@@ -77,6 +80,7 @@ private:
   void DCS_hook( const Parser::Hook* act );
   void DCS_put( const Parser::Put* act );
   void DCS_unhook( const Parser::Unhook* act );
+  void APC_end( const Parser::APC_End* act );
   void OSC_end( const Parser::OSC_End* act );
   void resize( size_t s_width, size_t s_height );
 

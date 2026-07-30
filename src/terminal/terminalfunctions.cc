@@ -483,6 +483,112 @@ static void CSI_DECRQM_ANSI( Framebuffer* fb, Dispatcher* dispatch )
 static Function func_CSI_DECRQM_DEC( CSI, "?$p", CSI_DECRQM_DEC );
 static Function func_CSI_DECRQM_ANSI( CSI, "$p", CSI_DECRQM_ANSI );
 
+static void CSI_XTMODKEYS( Framebuffer* fb, Dispatcher* dispatch )
+{
+  const int option = dispatch->getparam( 0, -1 );
+  if ( option != 4 ) { /* modifyOtherKeys */
+    return;
+  }
+
+  int value = dispatch->getparam( 1, 0 );
+  if ( value < 0 ) {
+    value = 0;
+  }
+  if ( value > 3 ) {
+    value = 3;
+  }
+  fb->ds.modify_other_keys = value;
+}
+
+static void CSI_XTDISABLEMODKEYS( Framebuffer* fb, Dispatcher* dispatch )
+{
+  const int option = dispatch->getparam( 0, -1 );
+  if ( option == 4 ) { /* modifyOtherKeys */
+    fb->ds.modify_other_keys = 0;
+  }
+}
+
+static void CSI_XTQMODKEYS( Framebuffer* fb, Dispatcher* dispatch )
+{
+  const int option = dispatch->getparam( 0, -1 );
+  if ( option != 4 ) { /* modifyOtherKeys */
+    return;
+  }
+
+  char response[32];
+  snprintf( response, sizeof( response ), "\033[>4;%dm", fb->ds.modify_other_keys );
+  dispatch->terminal_to_host.append( response );
+}
+
+static const int KITTY_KEYBOARD_FLAGS_MASK = 0x1f;
+static const size_t KITTY_KEYBOARD_STACK_MAX = 16;
+
+static void set_kitty_keyboard_flags( Framebuffer* fb, int flags )
+{
+  if ( flags < 0 ) {
+    flags = 0;
+  }
+  fb->ds.kitty_keyboard_flags = flags & KITTY_KEYBOARD_FLAGS_MASK;
+}
+
+static void CSI_KITTY_KEYBOARD_SET( Framebuffer* fb, Dispatcher* dispatch )
+{
+  const int flags = dispatch->getparam( 0, 0 ) & KITTY_KEYBOARD_FLAGS_MASK;
+  const int mode = dispatch->getparam( 1, 1 );
+
+  if ( mode == 1 ) {
+    set_kitty_keyboard_flags( fb, flags );
+  } else if ( mode == 2 ) {
+    set_kitty_keyboard_flags( fb, fb->ds.kitty_keyboard_flags | flags );
+  } else if ( mode == 3 ) {
+    set_kitty_keyboard_flags( fb, fb->ds.kitty_keyboard_flags & ~flags );
+  }
+}
+
+static void CSI_KITTY_KEYBOARD_PUSH( Framebuffer* fb, Dispatcher* dispatch )
+{
+  fb->ds.kitty_keyboard_stack.push_back( fb->ds.kitty_keyboard_flags );
+  if ( fb->ds.kitty_keyboard_stack.size() > KITTY_KEYBOARD_STACK_MAX ) {
+    fb->ds.kitty_keyboard_stack.erase( fb->ds.kitty_keyboard_stack.begin() );
+  }
+  set_kitty_keyboard_flags( fb, dispatch->getparam( 0, 0 ) );
+}
+
+static void CSI_KITTY_KEYBOARD_POP( Framebuffer* fb, Dispatcher* dispatch )
+{
+  int count = dispatch->getparam( 0, 1 );
+  if ( count < 1 ) {
+    count = 1;
+  }
+
+  int remaining = count;
+  while ( remaining > 0 && !fb->ds.kitty_keyboard_stack.empty() ) {
+    set_kitty_keyboard_flags( fb, fb->ds.kitty_keyboard_stack.back() );
+    fb->ds.kitty_keyboard_stack.pop_back();
+    remaining--;
+  }
+
+  if ( remaining > 0 ) {
+    set_kitty_keyboard_flags( fb, 0 );
+    fb->ds.kitty_keyboard_stack.clear();
+  }
+}
+
+static void CSI_KITTY_KEYBOARD_QUERY( Framebuffer* fb, Dispatcher* dispatch )
+{
+  char response[32];
+  snprintf( response, sizeof( response ), "\033[?%du", fb->ds.kitty_keyboard_flags );
+  dispatch->terminal_to_host.append( response );
+}
+
+static Function func_CSI_XTMODKEYS( CSI, ">m", CSI_XTMODKEYS, false );
+static Function func_CSI_XTDISABLEMODKEYS( CSI, ">n", CSI_XTDISABLEMODKEYS, false );
+static Function func_CSI_XTQMODKEYS( CSI, "?m", CSI_XTQMODKEYS, false );
+static Function func_CSI_KITTY_KEYBOARD_SET( CSI, "=u", CSI_KITTY_KEYBOARD_SET, false );
+static Function func_CSI_KITTY_KEYBOARD_PUSH( CSI, ">u", CSI_KITTY_KEYBOARD_PUSH, false );
+static Function func_CSI_KITTY_KEYBOARD_POP( CSI, "<u", CSI_KITTY_KEYBOARD_POP, false );
+static Function func_CSI_KITTY_KEYBOARD_QUERY( CSI, "?u", CSI_KITTY_KEYBOARD_QUERY, false );
+
 /* set top and bottom margins */
 static void CSI_DECSTBM( Framebuffer* fb, Dispatcher* dispatch )
 {
@@ -856,6 +962,23 @@ static bool parse_printable_ascii( const std::vector<wchar_t>& chars, std::strin
   return true;
 }
 
+static bool parse_8bit_bytes( const std::vector<wchar_t>& chars, std::string& str )
+{
+  str.reserve( chars.size() );
+  for ( wchar_t wide_char : chars ) {
+    if ( wide_char < 0 || wide_char > 255 ) {
+      return false;
+    }
+    str.append( 1, static_cast<char>( wide_char ) );
+  }
+  return true;
+}
+
+static bool starts_with( const std::string& str, const std::string& prefix )
+{
+  return str.compare( 0, prefix.size(), prefix ) == 0;
+}
+
 static std::string CSI_payload( const std::string& csi )
 {
   if ( csi.size() >= 2 && csi[0] == '\033' && csi[1] == '[' ) {
@@ -879,6 +1002,10 @@ static void DCS_DECRQSS( Framebuffer* fb, Dispatcher* dispatch )
     char cursor_style[32];
     snprintf( cursor_style, sizeof( cursor_style ), "%d q", fb->ds.cursor_style_param() );
     response = cursor_style;
+  } else if ( request == ">4m" ) {
+    char modify_other_keys[32];
+    snprintf( modify_other_keys, sizeof( modify_other_keys ), ">4;%dm", fb->ds.modify_other_keys );
+    response = modify_other_keys;
   } else if ( request == "r" ) {
     char margins[32];
     snprintf( margins,
@@ -1014,12 +1141,87 @@ static void DCS_XTGETTCAP( Dispatcher* dispatch )
   dispatch->terminal_to_host.append( "\033\\" );
 }
 
+static bool DCS_sixel_passthrough( Framebuffer* fb, Dispatcher* dispatch )
+{
+  if ( dispatch->get_DCS_string_truncated() || dispatch->get_dispatch_chars() != "q" ) {
+    return false;
+  }
+
+  std::string payload;
+  if ( !parse_8bit_bytes( dispatch->get_DCS_string(), payload ) ) {
+    return false;
+  }
+
+  std::string sequence = "\033P";
+  sequence.append( dispatch->get_params_string_raw() );
+  sequence.append( "q" );
+  sequence.append( payload );
+  sequence.append( "\033\\" );
+  fb->push_passthrough_sequence( sequence );
+  return true;
+}
+
 void Dispatcher::DCS_dispatch( const Parser::Unhook* act __attribute( ( unused ) ), Framebuffer* fb )
 {
   if ( dispatch_chars == "$q" ) {
     DCS_DECRQSS( fb, this );
   } else if ( dispatch_chars == "+q" ) {
     DCS_XTGETTCAP( this );
+  } else {
+    DCS_sixel_passthrough( fb, this );
+  }
+}
+
+static bool comma_arg_value( const std::string& args, const std::string& name, std::string& value )
+{
+  size_t loc = 0;
+  while ( loc <= args.size() ) {
+    const size_t end = args.find( ',', loc );
+    const std::string arg = args.substr( loc, ( end == std::string::npos ? args.size() : end ) - loc );
+    const size_t equals = arg.find( '=' );
+    if ( equals != std::string::npos && arg.substr( 0, equals ) == name ) {
+      value = arg.substr( equals + 1 );
+      return true;
+    }
+    if ( end == std::string::npos ) {
+      break;
+    }
+    loc = end + 1;
+  }
+  return false;
+}
+
+static bool kitty_graphics_should_passthrough( const std::string& apc )
+{
+  if ( !starts_with( apc, "G" ) ) {
+    return false;
+  }
+
+  const size_t separator = apc.find( ';', 1 );
+  const std::string control_data = apc.substr( 1, separator == std::string::npos ? std::string::npos : separator - 1 );
+  std::string transmission_medium;
+  if ( comma_arg_value( control_data, "t", transmission_medium ) && transmission_medium != "d" ) {
+    /* Do not let a remote host ask the local terminal to read or delete local
+       files/shared memory.  Direct inline payloads are the safe transport for
+       mosh. */
+    return false;
+  }
+  return true;
+}
+
+void Dispatcher::APC_dispatch( const Parser::APC_End* act __attribute( ( unused ) ), Framebuffer* fb )
+{
+  if ( get_APC_string_truncated() ) {
+    return;
+  }
+
+  std::string apc;
+  if ( !parse_printable_ascii( get_APC_string(), apc ) ) {
+    return;
+  }
+
+  if ( kitty_graphics_should_passthrough( apc ) ) {
+    fb->push_passthrough_sequence( std::string( "\033_" ) + apc + "\033\\" );
   }
 }
 
@@ -1086,6 +1288,151 @@ static bool OSC_color_query( const std::vector<wchar_t>& OSC_string, Dispatcher*
   return true;
 }
 
+static bool contains_space( const std::string& str )
+{
+  return str.find( ' ' ) != std::string::npos;
+}
+
+static bool all_digits( const std::string& str )
+{
+  if ( str.empty() ) {
+    return false;
+  }
+  for ( std::string::const_iterator it = str.begin(); it != str.end(); ++it ) {
+    if ( *it < '0' || *it > '9' ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool safe_file_url( const std::string& url )
+{
+  if ( url.size() > 4096 || !starts_with( url, "file://" ) || contains_space( url ) ) {
+    return false;
+  }
+
+  const size_t authority_end = url.find( '/', 7 );
+  const size_t at = url.find( '@', 7 );
+  return at == std::string::npos || ( authority_end != std::string::npos && at > authority_end );
+}
+
+static bool semicolon_arg_is( const std::string& args, const std::string& name, const std::string& value )
+{
+  size_t loc = 0;
+  while ( loc <= args.size() ) {
+    const size_t end = args.find( ';', loc );
+    const std::string arg = args.substr( loc, ( end == std::string::npos ? args.size() : end ) - loc );
+    const size_t equals = arg.find( '=' );
+    if ( equals != std::string::npos && arg.substr( 0, equals ) == name && arg.substr( equals + 1 ) == value ) {
+      return true;
+    }
+    if ( end == std::string::npos ) {
+      break;
+    }
+    loc = end + 1;
+  }
+  return false;
+}
+
+static bool iterm2_file_args_inline( const std::string& args )
+{
+  return semicolon_arg_is( args, "inline", "1" );
+}
+
+static bool OSC_1337_should_passthrough( const std::string& osc, Dispatcher* dispatch )
+{
+  const std::string body = osc.substr( 5 ); /* after "1337;" */
+
+  if ( starts_with( body, "CurrentDir=" ) ) {
+    return body.size() <= 4107;
+  }
+
+  if ( body == "SetMark" ) {
+    return true;
+  }
+
+  if ( starts_with( body, "File=" ) ) {
+    const size_t colon = body.find( ':' );
+    if ( colon == std::string::npos ) {
+      return false;
+    }
+    const bool pass = iterm2_file_args_inline( body.substr( 5, colon - 5 ) );
+    dispatch->set_iterm2_inline_file_in_progress( false );
+    return pass;
+  }
+
+  if ( starts_with( body, "MultipartFile=" ) ) {
+    const bool pass = iterm2_file_args_inline( body.substr( 14 ) );
+    dispatch->set_iterm2_inline_file_in_progress( pass );
+    return pass;
+  }
+
+  if ( starts_with( body, "FilePart=" ) ) {
+    return dispatch->get_iterm2_inline_file_in_progress();
+  }
+
+  if ( body == "FileEnd" ) {
+    const bool pass = dispatch->get_iterm2_inline_file_in_progress();
+    dispatch->set_iterm2_inline_file_in_progress( false );
+    return pass;
+  }
+
+  dispatch->set_iterm2_inline_file_in_progress( false );
+  return false;
+}
+
+static bool OSC_133_mark_should_passthrough( const std::string& body )
+{
+  if ( body.empty() ) {
+    return false;
+  }
+
+  const char mark = body[0];
+  if ( mark == 'A' || mark == 'B' || mark == 'C' ) {
+    return body.size() == 1 || body[1] == ';';
+  }
+  if ( mark == 'D' ) {
+    return body.size() == 1 || ( body[1] == ';' && all_digits( body.substr( 2 ) ) );
+  }
+  return false;
+}
+
+static bool OSC_633_should_passthrough( const std::string& osc )
+{
+  const std::string body = osc.substr( 4 ); /* after "633;" */
+  if ( OSC_133_mark_should_passthrough( body ) ) {
+    return true;
+  }
+
+  if ( starts_with( body, "P;Cwd=" ) ) {
+    return body.size() <= 4102;
+  }
+
+  return false;
+}
+
+static bool OSC_should_passthrough( const std::string& osc, Dispatcher* dispatch )
+{
+  if ( starts_with( osc, "7;" ) ) { /* current-directory URL */
+    return safe_file_url( osc.substr( 2 ) );
+  }
+
+  if ( starts_with( osc, "133;" ) ) { /* FinalTerm shell marks */
+    return OSC_133_mark_should_passthrough( osc.substr( 4 ) );
+  }
+
+  if ( starts_with( osc, "633;" ) ) { /* VS Code shell integration */
+    return OSC_633_should_passthrough( osc );
+  }
+
+  if ( starts_with( osc, "1337;" ) ) { /* iTerm2 shell integration / inline images */
+    return OSC_1337_should_passthrough( osc, dispatch );
+  }
+
+  return false;
+}
+
 /* xterm uses an Operating System Command to set the window title */
 void Dispatcher::OSC_dispatch( const Parser::OSC_End* act __attribute( ( unused ) ), Framebuffer* fb )
 {
@@ -1095,6 +1442,11 @@ void Dispatcher::OSC_dispatch( const Parser::OSC_End* act __attribute( ( unused 
 
   std::string OSC_ascii;
   if ( parse_printable_ascii( OSC_string, OSC_ascii ) ) {
+    if ( !get_OSC_string_truncated() && OSC_should_passthrough( OSC_ascii, this ) ) {
+      fb->push_passthrough_sequence( std::string( "\033]" ) + OSC_ascii + "\007" );
+      return;
+    }
+
     if ( OSC_ascii == "112" || OSC_ascii == "112;" ) {
       fb->ds.cursor_color.clear();
       return;

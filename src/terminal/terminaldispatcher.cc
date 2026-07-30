@@ -42,8 +42,7 @@
 
 using namespace Terminal;
 
-static const size_t MAXIMUM_CLIPBOARD_SIZE = 16 * 1024;
-static const size_t MAXIMUM_DCS_SIZE = 16 * 1024;
+static const size_t MAXIMUM_CONTROL_STRING_SIZE = 256 * 1024;
 static const size_t MAXIMUM_COLOR_RESPONSE_SIZE = 128;
 
 static bool valid_OSC_color_response( const std::string& color )
@@ -67,8 +66,9 @@ static bool supported_OSC_color_number( const int osc_number )
 }
 
 Dispatcher::Dispatcher()
-  : params(), parsed_params(), parsed( false ), dispatch_chars(), DCS_string(), OSC_string(),
-    osc_color_responses(), terminal_to_host()
+  : params(), parsed_params(), parsed( false ), dispatch_chars(), DCS_string(), APC_string(), OSC_string(),
+    DCS_string_truncated( false ), APC_string_truncated( false ), OSC_string_truncated( false ),
+    iterm2_inline_file_in_progress( false ), osc_color_responses(), terminal_to_host()
 {}
 
 void Dispatcher::newparamchar( const Parser::Param* act )
@@ -96,6 +96,7 @@ void Dispatcher::clear( const Parser::Clear* act __attribute( ( unused ) ) )
   params.clear();
   dispatch_chars.clear();
   DCS_string.clear();
+  DCS_string_truncated = false;
   parsed = false;
 }
 
@@ -299,33 +300,59 @@ void Dispatcher::DCS_hook( const Parser::Hook* act )
   act2.ch = act->ch;
   collect( &act2 );
   DCS_string.clear();
+  DCS_string_truncated = false;
 }
 
 void Dispatcher::DCS_put( const Parser::Put* act )
 {
   assert( act->char_present );
-  if ( DCS_string.size() < MAXIMUM_DCS_SIZE ) {
+  if ( DCS_string.size() < MAXIMUM_CONTROL_STRING_SIZE ) {
     DCS_string.push_back( act->ch );
+  } else {
+    DCS_string_truncated = true;
   }
+}
+
+void Dispatcher::APC_put( const Parser::APC_Put* act )
+{
+  assert( act->char_present );
+  if ( APC_string.size() < MAXIMUM_CONTROL_STRING_SIZE ) {
+    APC_string.push_back( act->ch );
+  } else {
+    APC_string_truncated = true;
+  }
+}
+
+void Dispatcher::APC_start( const Parser::APC_Start* act __attribute( ( unused ) ) )
+{
+  APC_string.clear();
+  APC_string_truncated = false;
 }
 
 void Dispatcher::OSC_put( const Parser::OSC_Put* act )
 {
   assert( act->char_present );
-  if ( OSC_string.size() < MAXIMUM_CLIPBOARD_SIZE ) {
+  if ( OSC_string.size() < MAXIMUM_CONTROL_STRING_SIZE ) {
     OSC_string.push_back( act->ch );
+  } else {
+    OSC_string_truncated = true;
   }
 }
 
 void Dispatcher::OSC_start( const Parser::OSC_Start* act __attribute( ( unused ) ) )
 {
   OSC_string.clear();
+  OSC_string_truncated = false;
 }
 
 bool Dispatcher::operator==( const Dispatcher& x ) const
 {
   return ( params == x.params ) && ( parsed_params == x.parsed_params ) && ( parsed == x.parsed )
          && ( dispatch_chars == x.dispatch_chars ) && ( DCS_string == x.DCS_string )
-         && ( OSC_string == x.OSC_string ) && ( osc_color_responses == x.osc_color_responses )
-         && ( terminal_to_host == x.terminal_to_host );
+         && ( APC_string == x.APC_string ) && ( OSC_string == x.OSC_string )
+         && ( DCS_string_truncated == x.DCS_string_truncated )
+         && ( APC_string_truncated == x.APC_string_truncated )
+         && ( OSC_string_truncated == x.OSC_string_truncated )
+         && ( iterm2_inline_file_in_progress == x.iterm2_inline_file_in_progress )
+         && ( osc_color_responses == x.osc_color_responses ) && ( terminal_to_host == x.terminal_to_host );
 }

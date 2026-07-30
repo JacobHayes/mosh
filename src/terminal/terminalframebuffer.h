@@ -366,6 +366,10 @@ public:
   bool mouse_focus_event;      // 1004
   bool mouse_alternate_scroll; // 1007
 
+  int modify_other_keys;
+  int kitty_keyboard_flags;
+  std::vector<int> kitty_keyboard_stack;
+
   enum MouseEncodingMode
   {
     MOUSE_ENCODING_DEFAULT = 0,
@@ -432,7 +436,27 @@ public:
            && ( renditions == x.renditions )
            && ( bracketed_paste == x.bracketed_paste ) && ( mouse_reporting_mode == x.mouse_reporting_mode )
            && ( mouse_focus_event == x.mouse_focus_event ) && ( mouse_alternate_scroll == x.mouse_alternate_scroll )
+           && ( modify_other_keys == x.modify_other_keys ) && ( kitty_keyboard_flags == x.kitty_keyboard_flags )
            && ( mouse_encoding_mode == x.mouse_encoding_mode ) && hyperlink == x.hyperlink;
+  }
+};
+
+class PassthroughSequence
+{
+public:
+  uint64_t sequence_number;
+  int cursor_col, cursor_row;
+  std::string sequence;
+
+  PassthroughSequence( uint64_t s_sequence_number, int s_cursor_col, int s_cursor_row, std::string s_sequence )
+    : sequence_number( s_sequence_number ), cursor_col( s_cursor_col ), cursor_row( s_cursor_row ),
+      sequence( std::move( s_sequence ) )
+  {}
+
+  bool operator==( const PassthroughSequence& x ) const
+  {
+    return ( sequence_number == x.sequence_number ) && ( cursor_col == x.cursor_col )
+           && ( cursor_row == x.cursor_row ) && ( sequence == x.sequence );
   }
 };
 
@@ -454,6 +478,7 @@ public:
   typedef std::vector<wchar_t> title_type;
   typedef std::shared_ptr<Row> row_pointer;
   typedef std::vector<row_pointer> rows_type; /* can be either std::vector or std::deque */
+  typedef std::vector<PassthroughSequence> passthrough_sequences_type;
 
 private:
   rows_type rows;
@@ -462,6 +487,8 @@ private:
   title_type clipboard;
   unsigned int bell_count;
   bool title_initialized; /* true if the window title has been set via an OSC */
+  uint64_t passthrough_sequence_count;
+  passthrough_sequences_type passthrough_sequences;
 
   /* Scrollback history.  The ring is shared among all Framebuffer
      copies held by the transport; the counters are per-state
@@ -569,6 +596,10 @@ public:
 
   void prefix_window_title( const title_type& s );
 
+  void push_passthrough_sequence( const std::string& sequence );
+  uint64_t get_passthrough_sequence_count( void ) const { return passthrough_sequence_count; }
+  const passthrough_sequences_type& get_passthrough_sequences( void ) const { return passthrough_sequences; }
+
   void resize( int s_width, int s_height );
 
   void reset_cell( Cell* c ) { c->reset( ds.get_background_rendition() ); }
@@ -602,7 +633,8 @@ public:
   bool operator==( const Framebuffer& x ) const
   {
     return ( rows == x.rows ) && ( window_title == x.window_title ) && ( clipboard == x.clipboard )
-           && ( bell_count == x.bell_count ) && ( ds == x.ds ) && ( history_row_count == x.history_row_count )
+           && ( bell_count == x.bell_count ) && ( passthrough_sequence_count == x.passthrough_sequence_count )
+           && ( ds == x.ds ) && ( history_row_count == x.history_row_count )
            && ( history_clear_count == x.history_clear_count )
            && ( history_truncate_count == x.history_truncate_count )
            && ( alt_screen_active == x.alt_screen_active ) && ( saved_primary_rows == x.saved_primary_rows );
