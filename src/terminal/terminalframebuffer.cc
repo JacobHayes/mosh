@@ -34,11 +34,207 @@
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #include "src/terminal/terminalframebuffer.h"
 #include "src/terminal/terminalhistory.h"
 
 using namespace Terminal;
+
+static bool starts_with( const std::string& str, const char* prefix )
+{
+  return str.compare( 0, strlen( prefix ), prefix ) == 0;
+}
+
+static bool passthrough_sequence_is_graphics( const std::string& sequence )
+{
+  if ( starts_with( sequence, "\033_G" ) ) { /* kitty graphics */
+    return true;
+  }
+
+  if ( starts_with( sequence, "\033P" ) ) { /* SIXEL DCS pass-through */
+    return true;
+  }
+
+  if ( starts_with( sequence, "\033]1337;File=" )
+       || starts_with( sequence, "\033]1337;MultipartFile=" )
+       || starts_with( sequence, "\033]1337;FilePart=" )
+       || starts_with( sequence, "\033]1337;FileEnd" ) ) {
+    return true;
+  }
+
+  return false;
+}
+
+static bool kitty_graphics_control_data( const std::string& sequence,
+                                         size_t& start,
+                                         size_t& len,
+                                         std::string& control_data )
+{
+  if ( !starts_with( sequence, "\033_G" ) ) {
+    return false;
+  }
+
+  start = 3; /* after ESC _ G */
+  size_t end = sequence.find( ';', start );
+  if ( end == std::string::npos ) {
+    end = sequence.find( "\033\\", start );
+  }
+  if ( end == std::string::npos || end < start ) {
+    return false;
+  }
+
+  len = end - start;
+  control_data = sequence.substr( start, len );
+  return true;
+}
+
+static bool comma_arg_value( const std::string& args, const std::string& name, std::string& value )
+{
+  size_t loc = 0;
+  while ( loc <= args.size() ) {
+    const size_t end = args.find( ',', loc );
+    const std::string arg = args.substr( loc, ( end == std::string::npos ? args.size() : end ) - loc );
+    const size_t equals = arg.find( '=' );
+    if ( equals != std::string::npos && arg.substr( 0, equals ) == name ) {
+      value = arg.substr( equals + 1 );
+      return true;
+    }
+    if ( end == std::string::npos ) {
+      break;
+    }
+    loc = end + 1;
+  }
+  return false;
+}
+
+static bool comma_arg_nonnegative_int( const std::string& args, const std::string& name, int& value )
+{
+  std::string str;
+  if ( !comma_arg_value( args, name, str ) || str.empty() ) {
+    return false;
+  }
+
+  int parsed = 0;
+  for ( std::string::const_iterator it = str.begin(); it != str.end(); ++it ) {
+    if ( *it < '0' || *it > '9' ) {
+      return false;
+    }
+    const int digit = *it - '0';
+    if ( parsed > ( 65535 - digit ) / 10 ) {
+      return false;
+    }
+    parsed = parsed * 10 + digit;
+  }
+
+  value = parsed;
+  return true;
+}
+
+static void set_comma_arg( std::string& args, const std::string& name, const int value )
+{
+  char buf[32];
+  snprintf( buf, sizeof buf, "%d", value );
+
+  size_t loc = 0;
+  while ( loc <= args.size() ) {
+    const size_t end = args.find( ',', loc );
+    const size_t arg_end = end == std::string::npos ? args.size() : end;
+    const size_t equals = args.find( '=', loc );
+    if ( equals != std::string::npos && equals < arg_end && args.substr( loc, equals - loc ) == name ) {
+      args.replace( equals + 1, arg_end - equals - 1, buf );
+      return;
+    }
+    if ( end == std::string::npos ) {
+      break;
+    }
+    loc = end + 1;
+  }
+
+  if ( !args.empty() ) {
+    args.push_back( ',' );
+  }
+  args.append( name );
+  args.push_back( '=' );
+  args.append( buf );
+}
+
+static bool kitty_control_data_only_m_or_q( const std::string& control_data )
+{
+  size_t loc = 0;
+  bool saw_arg = false;
+  while ( loc <= control_data.size() ) {
+    const size_t end = control_data.find( ',', loc );
+    const std::string arg = control_data.substr( loc, ( end == std::string::npos ? control_data.size() : end ) - loc );
+    const size_t equals = arg.find( '=' );
+    const std::string key = equals == std::string::npos ? arg : arg.substr( 0, equals );
+    saw_arg = true;
+    if ( key != "m" && key != "q" ) {
+      return false;
+    }
+    if ( end == std::string::npos ) {
+      break;
+    }
+    loc = end + 1;
+  }
+  return saw_arg;
+}
+
+static bool kitty_graphics_sequence_starts_chunk( const std::string& sequence )
+{
+  size_t start = 0, len = 0;
+  std::string control_data;
+  std::string more_chunks;
+  return kitty_graphics_control_data( sequence, start, len, control_data )
+         && comma_arg_value( control_data, "m", more_chunks ) && more_chunks == "1"
+         && !kitty_control_data_only_m_or_q( control_data );
+}
+
+static bool kitty_graphics_sequence_finishes_chunk( const std::string& sequence )
+{
+  size_t start = 0, len = 0;
+  std::string control_data;
+  std::string more_chunks;
+  return kitty_graphics_control_data( sequence, start, len, control_data )
+         && comma_arg_value( control_data, "m", more_chunks ) && more_chunks == "0";
+}
+
+static bool clip_kitty_graphics_sequence_top( std::string& sequence, const int clipped_rows )
+{
+  size_t start = 0, len = 0;
+  std::string control_data;
+  if ( clipped_rows <= 0 || !kitty_graphics_control_data( sequence, start, len, control_data ) ) {
+    return false;
+  }
+
+  int display_rows = 0;
+  if ( !comma_arg_nonnegative_int( control_data, "r", display_rows ) || clipped_rows >= display_rows ) {
+    return false;
+  }
+
+  int source_y = 0;
+  comma_arg_nonnegative_int( control_data, "y", source_y );
+
+  int source_height = 0;
+  if ( !comma_arg_nonnegative_int( control_data, "h", source_height )
+       && !comma_arg_nonnegative_int( control_data, "v", source_height ) ) {
+    return false;
+  }
+
+  int clipped_pixels = static_cast<int>( static_cast<long long>( source_height ) * clipped_rows / display_rows );
+  if ( clipped_pixels <= 0 ) {
+    clipped_pixels = 1;
+  }
+  if ( clipped_pixels >= source_height ) {
+    return false;
+  }
+
+  set_comma_arg( control_data, "y", source_y + clipped_pixels );
+  set_comma_arg( control_data, "h", source_height - clipped_pixels );
+  set_comma_arg( control_data, "r", display_rows - clipped_rows );
+  sequence.replace( start, len, control_data );
+  return true;
+}
 
 Cell::Cell( color_type background_color )
   : contents(), renditions( background_color ), hyperlink(), wide( false ), fallback( false ), wrap( false )
@@ -138,6 +334,7 @@ void Framebuffer::switch_to_alternate_screen( bool save_cursor )
   /* xterm's 1049 presents a cleared alternate screen; we do the same
      for 1047, whose clear merely happens on exit instead */
   rows = rows_type( ds.get_height(), newrow() );
+  clear_graphics_passthrough_sequences();
   alt_screen_active = true;
 }
 
@@ -148,6 +345,7 @@ void Framebuffer::switch_to_primary_screen( bool restore_cursor )
   }
   rows = saved_primary_rows;
   saved_primary_rows.clear();
+  clear_graphics_passthrough_sequences();
   alt_screen_active = false;
   /* discard the alternate screen's DECSC slot */
   ds.set_saved_cursor( primary_saved_cursor );
@@ -417,6 +615,19 @@ void Framebuffer::insert_line( int before_row, int count )
     return;
   }
 
+  for ( passthrough_sequences_type::iterator it = passthrough_sequences.begin();
+        it != passthrough_sequences.end(); ) {
+    if ( !passthrough_sequence_is_graphics( it->sequence ) || it->cursor_row < before_row
+         || it->cursor_row > ds.get_scrolling_region_bottom_row() ) {
+      ++it;
+    } else if ( it->cursor_row > ds.get_scrolling_region_bottom_row() - scroll ) {
+      it = passthrough_sequences.erase( it );
+    } else {
+      it->cursor_row += scroll;
+      ++it;
+    }
+  }
+
   // delete old rows
   rows_type::iterator start = rows.begin() + ds.get_scrolling_region_bottom_row() + 1 - scroll;
   rows.erase( start, start + scroll );
@@ -438,6 +649,56 @@ void Framebuffer::delete_line( int row, int count )
 
   if ( scroll == 0 ) {
     return;
+  }
+
+  bool kitty_chunk_in_progress = false;
+  bool kitty_chunk_keep = false;
+  for ( passthrough_sequences_type::iterator it = passthrough_sequences.begin();
+        it != passthrough_sequences.end(); ) {
+    const bool starts_kitty_chunk = kitty_graphics_sequence_starts_chunk( it->sequence );
+    const bool finishes_kitty_chunk = kitty_graphics_sequence_finishes_chunk( it->sequence );
+    if ( starts_kitty_chunk ) {
+      kitty_chunk_in_progress = true;
+      kitty_chunk_keep = true;
+    }
+
+    bool erase = false;
+    if ( !passthrough_sequence_is_graphics( it->sequence ) || it->cursor_row < row
+         || it->cursor_row > ds.get_scrolling_region_bottom_row() ) {
+      /* no adjustment */
+    } else if ( it->cursor_row < row + scroll ) {
+      if ( starts_kitty_chunk ) {
+        kitty_chunk_keep = clip_kitty_graphics_sequence_top( it->sequence, row + scroll - it->cursor_row );
+        if ( kitty_chunk_keep ) {
+          it->cursor_row = row;
+        } else {
+          erase = true;
+        }
+      } else if ( kitty_chunk_in_progress ) {
+        if ( kitty_chunk_keep ) {
+          it->cursor_row = row;
+        } else {
+          erase = true;
+        }
+      } else if ( clip_kitty_graphics_sequence_top( it->sequence, row + scroll - it->cursor_row ) ) {
+        it->cursor_row = row;
+      } else {
+        erase = true;
+      }
+    } else {
+      it->cursor_row -= scroll;
+    }
+
+    if ( erase ) {
+      it = passthrough_sequences.erase( it );
+    } else {
+      ++it;
+    }
+
+    if ( finishes_kitty_chunk ) {
+      kitty_chunk_in_progress = false;
+      kitty_chunk_keep = false;
+    }
   }
 
   // delete old rows
@@ -486,6 +747,7 @@ void Framebuffer::reset( void )
   ds = DrawState( width, height );
   rows = rows_type( height, newrow() );
   saved_primary_rows.clear();
+  clear_graphics_passthrough_sequences();
   alt_screen_active = false;
   window_title.clear();
   clipboard.clear();
@@ -527,6 +789,7 @@ void Framebuffer::resize( int s_width, int s_height )
      result overwrites whatever the legacy path produces. */
   if ( history && history->capture_enabled() && !alt_screen_active ) {
     reflow( s_width, s_height );
+    clear_graphics_passthrough_sequences();
     return;
   }
 
@@ -551,6 +814,17 @@ void Framebuffer::resize( int s_width, int s_height )
       *i = std::make_shared<Row>( **i );
       ( *i )->set_wrap( false );
       ( *i )->cells.resize( s_width, Cell( ds.get_background_rendition() ) );
+    }
+  }
+
+  for ( passthrough_sequences_type::iterator it = passthrough_sequences.begin();
+        it != passthrough_sequences.end(); ) {
+    if ( passthrough_sequence_is_graphics( it->sequence )
+         && ( it->cursor_row < 0 || it->cursor_row >= ds.get_height()
+              || it->cursor_col < 0 || it->cursor_col >= ds.get_width() ) ) {
+      it = passthrough_sequences.erase( it );
+    } else {
+      ++it;
     }
   }
 }
@@ -1014,6 +1288,18 @@ void Framebuffer::prefix_window_title( const title_type& s )
   window_title.insert( window_title.begin(), s.begin(), s.end() );
 }
 
+void Framebuffer::clear_graphics_passthrough_sequences( void )
+{
+  for ( passthrough_sequences_type::iterator it = passthrough_sequences.begin();
+        it != passthrough_sequences.end(); ) {
+    if ( passthrough_sequence_is_graphics( it->sequence ) ) {
+      it = passthrough_sequences.erase( it );
+    } else {
+      ++it;
+    }
+  }
+}
+
 void Framebuffer::push_passthrough_sequence( const std::string& sequence )
 {
   if ( sequence.empty() ) {
@@ -1026,10 +1312,11 @@ void Framebuffer::push_passthrough_sequence( const std::string& sequence )
                                                         ds.get_cursor_row(),
                                                         sequence ) );
 
-  static const size_t MAX_PASSTHROUGH_SEQUENCES = 32;
   /* Keep recent passthrough graphics/shell-integration events bounded, while
      allowing ordinary terminal-sized direct inline images to survive until the
-     next display frame. */
+     next display frame. Kitty/chafa commonly split one image into thousands of
+     small APC chunks, so the sequence cap must be large enough for the byte cap. */
+  static const size_t MAX_PASSTHROUGH_SEQUENCES = 8192;
   static const size_t MAX_PASSTHROUGH_BYTES = 4 * 1024 * 1024;
   size_t bytes = 0;
   for ( passthrough_sequences_type::const_iterator it = passthrough_sequences.begin();

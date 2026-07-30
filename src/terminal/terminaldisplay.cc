@@ -265,7 +265,7 @@ std::string Display::new_frame( bool initialized, const Framebuffer& last, const
     wrap = put_row( initialized, frame, f, frame_y, *rows.at( frame_y ), wrap );
   }
 
-  /* replay zero-width shell-integration and graphics pass-through events */
+  /* replay shell-integration and graphics pass-through events */
   const uint64_t last_passthrough_sequence_count = initialized ? frame.last_frame.get_passthrough_sequence_count() : 0;
   const Framebuffer::passthrough_sequences_type& passthrough_sequences = f.get_passthrough_sequences();
   for ( Framebuffer::passthrough_sequences_type::const_iterator it = passthrough_sequences.begin();

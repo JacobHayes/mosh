@@ -110,6 +110,97 @@ int main( void )
     assert_contains( frame, large_payload.substr( 0, 1024 ) );
   }
 
+  {
+    Terminal::Complete graphics_terminal( 80, 24 );
+    const std::string first_chunk( 512, 'A' );
+    const std::string middle_chunk( 512, 'B' );
+    const std::string final_chunk( 512, 'Z' );
+
+    assert( graphics_terminal.act( "\033_Ga=T,f=32,s=1,v=1,m=1\033\\" ).empty() );
+    assert( graphics_terminal.act( std::string( "\033_Gm=1;" ) + first_chunk + "\033\\" ).empty() );
+    for ( int i = 0; i < 63; i++ ) {
+      assert( graphics_terminal.act( std::string( "\033_Gm=1;" ) + middle_chunk + "\033\\" ).empty() );
+    }
+    assert( graphics_terminal.act( std::string( "\033_Gm=0;" ) + final_chunk + "\033\\" ).empty() );
+
+    assert( graphics_terminal.get_fb().get_passthrough_sequences().size() > 32 );
+    frame = frame_from( Terminal::Framebuffer( 80, 24 ), graphics_terminal.get_fb() );
+    assert_contains( frame, "\033_Ga=T,f=32,s=1,v=1,m=1\033\\" );
+    assert_contains( frame, std::string( "\033_Gm=1;" ) + first_chunk.substr( 0, 64 ) );
+    assert_contains( frame, std::string( "\033_Gm=0;" ) + final_chunk.substr( 0, 64 ) );
+  }
+
+  {
+    Terminal::Complete graphics_terminal( 80, 10 );
+    assert( graphics_terminal.act( "\033[2;1H" ).empty() );
+    assert( graphics_terminal.act( "\033_Ga=T,c=4,r=3,m=1;AAAA\033\\" ).empty() );
+    assert( graphics_terminal.get_fb().ds.get_cursor_row() == 1 );
+    assert( graphics_terminal.get_fb().ds.get_cursor_col() == 0 );
+    assert( graphics_terminal.act( "\033_Gm=0;BBBB\033\\" ).empty() );
+    assert( graphics_terminal.get_fb().ds.get_cursor_row() == 3 );
+    assert( graphics_terminal.get_fb().ds.get_cursor_col() == 4 );
+    assert( graphics_terminal.act( "\r\nX" ).empty() );
+    assert_contains( graphics_terminal.get_fb().get_cell( 4, 0 )->debug_contents(), "'X'" );
+  }
+
+  {
+    Terminal::Complete graphics_terminal( 80, 10 );
+    assert( graphics_terminal.act( "\033[3;5H" ).empty() );
+    assert( graphics_terminal.act( "\033_Ga=T,c=4,r=3,C=1;AAAA\033\\" ).empty() );
+    assert( graphics_terminal.get_fb().ds.get_cursor_row() == 2 );
+    assert( graphics_terminal.get_fb().ds.get_cursor_col() == 4 );
+  }
+
+  {
+    Terminal::Complete graphics_terminal( 80, 10 );
+    assert( graphics_terminal.act( "\033[2;79H" ).empty() );
+    assert( graphics_terminal.act( "\033_Ga=T,c=2,r=1;AAAA\033\\" ).empty() );
+    assert( graphics_terminal.get_fb().ds.get_cursor_row() == 2 );
+    assert( graphics_terminal.get_fb().ds.get_cursor_col() == 0 );
+  }
+
+  {
+    Terminal::Complete graphics_terminal( 80, 5 );
+    assert( graphics_terminal.act( "\033[3;1H" ).empty() );
+    assert( graphics_terminal.act( "\033_Ga=T,c=1,r=1,C=1;AAAA\033\\" ).empty() );
+    assert( graphics_terminal.get_fb().get_passthrough_sequences().size() == 1 );
+    assert( graphics_terminal.get_fb().get_passthrough_sequences().front().cursor_row == 2 );
+    assert( graphics_terminal.act( "\033[5;1H\n" ).empty() );
+    assert( graphics_terminal.get_fb().get_passthrough_sequences().size() == 1 );
+    assert( graphics_terminal.get_fb().get_passthrough_sequences().front().cursor_row == 1 );
+    for ( int i = 0; i < 2; i++ ) {
+      assert( graphics_terminal.act( "\033[5;1H\n" ).empty() );
+    }
+    assert( graphics_terminal.get_fb().get_passthrough_sequences().empty() );
+  }
+
+  {
+    Terminal::Complete graphics_terminal( 80, 5 );
+    assert( graphics_terminal.act( "\033_Ga=T,s=10,v=50,c=1,r=5,m=1;AAAA\033\\" ).empty() );
+    assert( graphics_terminal.act( "\033_Gm=0;BBBB\033\\" ).empty() );
+    assert( graphics_terminal.get_fb().ds.get_cursor_row() == 4 );
+    assert( graphics_terminal.act( "\n" ).empty() );
+    assert( graphics_terminal.get_fb().get_passthrough_sequences().size() == 2 );
+    assert( graphics_terminal.get_fb().get_passthrough_sequences().front().cursor_row == 0 );
+    assert_contains( graphics_terminal.get_fb().get_passthrough_sequences().front().sequence, "y=10" );
+    assert_contains( graphics_terminal.get_fb().get_passthrough_sequences().front().sequence, "h=40" );
+    assert_contains( graphics_terminal.get_fb().get_passthrough_sequences().front().sequence, "r=4" );
+    assert( graphics_terminal.act( "\n" ).empty() );
+    assert_contains( graphics_terminal.get_fb().get_passthrough_sequences().front().sequence, "y=20" );
+    assert_contains( graphics_terminal.get_fb().get_passthrough_sequences().front().sequence, "h=30" );
+    assert_contains( graphics_terminal.get_fb().get_passthrough_sequences().front().sequence, "r=3" );
+  }
+
+  {
+    Terminal::Complete graphics_terminal( 80, 10 );
+    assert( graphics_terminal.act( "\033_Ga=T,c=1,r=1,C=1;AAAA\033\\" ).empty() );
+    assert( graphics_terminal.act( "\033_Ga=d\033\\" ).empty() );
+    assert( graphics_terminal.get_fb().get_passthrough_sequences().size() == 1 );
+    frame = frame_from( Terminal::Framebuffer( 80, 10 ), graphics_terminal.get_fb() );
+    assert_not_contains( frame, "\033_Ga=T,c=1,r=1,C=1;AAAA\033\\" );
+    assert_contains( frame, "\033_Ga=d\033\\" );
+  }
+
   before = terminal.get_fb();
   assert( terminal.act( "\033Pq~~~~\033\\" ).empty() );
   frame = frame_from( before, terminal.get_fb() );

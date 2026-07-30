@@ -71,7 +71,9 @@ static bool supported_OSC_color_number( const int osc_number )
 Dispatcher::Dispatcher()
   : params(), parsed_params(), parsed( false ), dispatch_chars(), DCS_string(), APC_string(), OSC_string(),
     DCS_string_truncated( false ), APC_string_truncated( false ), OSC_string_truncated( false ),
-    iterm2_inline_file_in_progress( false ), osc_color_responses(), terminal_to_host()
+    iterm2_inline_file_in_progress( false ), kitty_graphics_chunk_in_progress( false ),
+    kitty_graphics_chunk_moves_cursor( false ), kitty_graphics_chunk_cols( 0 ), kitty_graphics_chunk_rows( 0 ),
+    osc_color_responses(), terminal_to_host()
 {}
 
 void Dispatcher::newparamchar( const Parser::Param* act )
@@ -357,5 +359,9 @@ bool Dispatcher::operator==( const Dispatcher& x ) const
          && ( APC_string_truncated == x.APC_string_truncated )
          && ( OSC_string_truncated == x.OSC_string_truncated )
          && ( iterm2_inline_file_in_progress == x.iterm2_inline_file_in_progress )
+         && ( kitty_graphics_chunk_in_progress == x.kitty_graphics_chunk_in_progress )
+         && ( kitty_graphics_chunk_moves_cursor == x.kitty_graphics_chunk_moves_cursor )
+         && ( kitty_graphics_chunk_cols == x.kitty_graphics_chunk_cols )
+         && ( kitty_graphics_chunk_rows == x.kitty_graphics_chunk_rows )
          && ( osc_color_responses == x.osc_color_responses ) && ( terminal_to_host == x.terminal_to_host );
 }

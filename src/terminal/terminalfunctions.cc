@@ -96,6 +96,7 @@ static void CSI_ED( Framebuffer* fb, Dispatcher* dispatch )
       for ( int y = 0; y < fb->ds.get_height(); y++ ) {
         fb->reset_row( fb->get_mutable_row( y ) );
       }
+      fb->clear_graphics_passthrough_sequences();
       break;
     case 3: /* saved lines (xterm) -- clears scrollback, leaves screen alone */
       fb->clear_history_scrollback();
@@ -1199,14 +1200,42 @@ static bool comma_arg_value( const std::string& args, const std::string& name, s
   return false;
 }
 
-static bool kitty_graphics_should_passthrough( const std::string& apc )
+static bool comma_arg_nonnegative_int( const std::string& args, const std::string& name, int& value )
+{
+  std::string str;
+  if ( !comma_arg_value( args, name, str ) || str.empty() ) {
+    return false;
+  }
+
+  int parsed = 0;
+  for ( std::string::const_iterator it = str.begin(); it != str.end(); ++it ) {
+    if ( *it < '0' || *it > '9' ) {
+      return false;
+    }
+    const int digit = *it - '0';
+    if ( parsed > ( Dispatcher::PARAM_MAX - digit ) / 10 ) {
+      return false;
+    }
+    parsed = parsed * 10 + digit;
+  }
+
+  value = parsed;
+  return true;
+}
+
+static void kitty_graphics_control_data( const std::string& apc, std::string& control_data )
+{
+  const size_t separator = apc.find( ';', 1 );
+  control_data = apc.substr( 1, separator == std::string::npos ? std::string::npos : separator - 1 );
+}
+
+static bool kitty_graphics_should_passthrough( const std::string& apc, std::string& control_data )
 {
   if ( !starts_with( apc, "G" ) ) {
     return false;
   }
 
-  const size_t separator = apc.find( ';', 1 );
-  const std::string control_data = apc.substr( 1, separator == std::string::npos ? std::string::npos : separator - 1 );
+  kitty_graphics_control_data( apc, control_data );
   std::string transmission_medium;
   if ( comma_arg_value( control_data, "t", transmission_medium ) && transmission_medium != "d" ) {
     /* Do not let a remote host ask the local terminal to read or delete local
@@ -1217,19 +1246,102 @@ static bool kitty_graphics_should_passthrough( const std::string& apc )
   return true;
 }
 
+static bool kitty_graphics_command_moves_cursor( const std::string& control_data, int& cols, int& rows )
+{
+  std::string action;
+  if ( !comma_arg_value( control_data, "a", action ) ) {
+    action = "t";
+  }
+
+  if ( action != "T" && action != "p" ) {
+    return false;
+  }
+
+  std::string cursor_policy;
+  if ( comma_arg_value( control_data, "C", cursor_policy ) && cursor_policy == "1" ) {
+    return false;
+  }
+
+  cols = 0;
+  rows = 0;
+  comma_arg_nonnegative_int( control_data, "c", cols );
+  comma_arg_nonnegative_int( control_data, "r", rows );
+  return cols > 0 || rows > 0;
+}
+
+static void kitty_graphics_move_cursor( Framebuffer* fb, const int cols, const int rows )
+{
+  int target_col = fb->ds.get_cursor_col() + cols;
+  int row_delta = rows > 0 ? rows - 1 : 0;
+
+  if ( target_col >= fb->ds.get_width() ) {
+    target_col = 0;
+    row_delta++;
+  }
+
+  if ( row_delta > 0 ) {
+    fb->move_rows_autoscroll( row_delta );
+  }
+  fb->ds.move_col( target_col, false, false );
+}
+
 void Dispatcher::APC_dispatch( const Parser::APC_End* act __attribute( ( unused ) ), Framebuffer* fb )
 {
   if ( get_APC_string_truncated() ) {
+    end_kitty_graphics_chunk();
     return;
   }
 
   std::string apc;
   if ( !parse_printable_ascii( get_APC_string(), apc ) ) {
+    end_kitty_graphics_chunk();
     return;
   }
 
-  if ( kitty_graphics_should_passthrough( apc ) ) {
+  std::string control_data;
+  if ( kitty_graphics_should_passthrough( apc, control_data ) ) {
+    std::string action;
+    if ( comma_arg_value( control_data, "a", action ) && action == "d" ) {
+      /* Keep the delete event for attached clients, but do not retain older
+         placements that it invalidates for future full-frame replays. */
+      fb->clear_graphics_passthrough_sequences();
+    }
+
     fb->push_passthrough_sequence( std::string( "\033_" ) + apc + "\033\\" );
+
+    int more_chunks = -1;
+    comma_arg_nonnegative_int( control_data, "m", more_chunks );
+
+    if ( more_chunks == 1 ) {
+      if ( !get_kitty_graphics_chunk_in_progress() ) {
+        int cols = 0;
+        int rows = 0;
+        const bool moves_cursor = kitty_graphics_command_moves_cursor( control_data, cols, rows );
+        start_kitty_graphics_chunk( moves_cursor, cols, rows );
+      }
+    } else if ( more_chunks == 0 ) {
+      if ( get_kitty_graphics_chunk_in_progress() ) {
+        if ( get_kitty_graphics_chunk_moves_cursor() ) {
+          kitty_graphics_move_cursor( fb, get_kitty_graphics_chunk_cols(), get_kitty_graphics_chunk_rows() );
+        }
+        end_kitty_graphics_chunk();
+      } else {
+        int cols = 0;
+        int rows = 0;
+        if ( kitty_graphics_command_moves_cursor( control_data, cols, rows ) ) {
+          kitty_graphics_move_cursor( fb, cols, rows );
+        }
+      }
+    } else {
+      int cols = 0;
+      int rows = 0;
+      if ( kitty_graphics_command_moves_cursor( control_data, cols, rows ) ) {
+        kitty_graphics_move_cursor( fb, cols, rows );
+      }
+      end_kitty_graphics_chunk();
+    }
+  } else {
+    end_kitty_graphics_chunk();
   }
 }
 

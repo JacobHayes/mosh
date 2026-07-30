@@ -597,6 +597,7 @@ public:
   void prefix_window_title( const title_type& s );
 
   void push_passthrough_sequence( const std::string& sequence );
+  void clear_graphics_passthrough_sequences( void );
   uint64_t get_passthrough_sequence_count( void ) const { return passthrough_sequence_count; }
   const passthrough_sequences_type& get_passthrough_sequences( void ) const { return passthrough_sequences; }
 

@@ -108,6 +108,10 @@ private:
   bool APC_string_truncated;
   bool OSC_string_truncated;
   bool iterm2_inline_file_in_progress;
+  bool kitty_graphics_chunk_in_progress;
+  bool kitty_graphics_chunk_moves_cursor;
+  int kitty_graphics_chunk_cols;
+  int kitty_graphics_chunk_rows;
   std::map<int, std::string> osc_color_responses;
 
   void parse_params( void );
@@ -142,6 +146,24 @@ public:
   void set_iterm2_inline_file_in_progress( bool in_progress )
   {
     iterm2_inline_file_in_progress = in_progress;
+  }
+  bool get_kitty_graphics_chunk_in_progress( void ) const { return kitty_graphics_chunk_in_progress; }
+  bool get_kitty_graphics_chunk_moves_cursor( void ) const { return kitty_graphics_chunk_moves_cursor; }
+  int get_kitty_graphics_chunk_cols( void ) const { return kitty_graphics_chunk_cols; }
+  int get_kitty_graphics_chunk_rows( void ) const { return kitty_graphics_chunk_rows; }
+  void start_kitty_graphics_chunk( bool moves_cursor, int cols, int rows )
+  {
+    kitty_graphics_chunk_in_progress = true;
+    kitty_graphics_chunk_moves_cursor = moves_cursor;
+    kitty_graphics_chunk_cols = cols;
+    kitty_graphics_chunk_rows = rows;
+  }
+  void end_kitty_graphics_chunk( void )
+  {
+    kitty_graphics_chunk_in_progress = false;
+    kitty_graphics_chunk_moves_cursor = false;
+    kitty_graphics_chunk_cols = 0;
+    kitty_graphics_chunk_rows = 0;
   }
   void set_OSC_color_response( int osc_number, const std::string& color );
   std::string get_OSC_color_response( int osc_number ) const;
