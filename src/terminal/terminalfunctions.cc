@@ -1271,16 +1271,19 @@ static bool kitty_graphics_command_moves_cursor( const std::string& control_data
 
 static void kitty_graphics_move_cursor( Framebuffer* fb, const int cols, const int rows )
 {
-  int target_col = fb->ds.get_cursor_col() + cols;
-  int row_delta = rows > 0 ? rows - 1 : 0;
+  /* Match Ghostty/the kitty spec: move down r full rows (scrolling at
+     the bottom, exactly like r index operations), then set the column
+     to anchor_col + c clamped to the last column (no wrap). */
+  const int anchor_col = fb->ds.get_cursor_col();
 
-  if ( target_col >= fb->ds.get_width() ) {
-    target_col = 0;
-    row_delta++;
+  if ( rows > 0 ) {
+    fb->move_rows_autoscroll( rows );
   }
 
-  if ( row_delta > 0 ) {
-    fb->move_rows_autoscroll( row_delta );
+  int target_col = anchor_col + cols;
+  const int max_col = fb->ds.get_width() - 1;
+  if ( target_col > max_col ) {
+    target_col = max_col;
   }
   fb->ds.move_col( target_col, false, false );
 }

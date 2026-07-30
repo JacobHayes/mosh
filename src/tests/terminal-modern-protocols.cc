@@ -137,10 +137,11 @@ int main( void )
     assert( graphics_terminal.get_fb().ds.get_cursor_row() == 1 );
     assert( graphics_terminal.get_fb().ds.get_cursor_col() == 0 );
     assert( graphics_terminal.act( "\033_Gm=0;BBBB\033\\" ).empty() );
-    assert( graphics_terminal.get_fb().ds.get_cursor_row() == 3 );
+    /* Cursor moves down r=3 full rows (1 -> 4) and to anchor_col + c = 4. */
+    assert( graphics_terminal.get_fb().ds.get_cursor_row() == 4 );
     assert( graphics_terminal.get_fb().ds.get_cursor_col() == 4 );
     assert( graphics_terminal.act( "\r\nX" ).empty() );
-    assert_contains( graphics_terminal.get_fb().get_cell( 4, 0 )->debug_contents(), "'X'" );
+    assert_contains( graphics_terminal.get_fb().get_cell( 5, 0 )->debug_contents(), "'X'" );
   }
 
   {
@@ -155,8 +156,9 @@ int main( void )
     Terminal::Complete graphics_terminal( 80, 10 );
     assert( graphics_terminal.act( "\033[2;79H" ).empty() );
     assert( graphics_terminal.act( "\033_Ga=T,c=2,r=1;AAAA\033\\" ).empty() );
+    /* anchor_col + c = 78 + 2 = 80 clamps to the last column (79), no wrap. */
     assert( graphics_terminal.get_fb().ds.get_cursor_row() == 2 );
-    assert( graphics_terminal.get_fb().ds.get_cursor_col() == 0 );
+    assert( graphics_terminal.get_fb().ds.get_cursor_col() == 79 );
   }
 
   {
@@ -178,17 +180,45 @@ int main( void )
     Terminal::Complete graphics_terminal( 80, 5 );
     assert( graphics_terminal.act( "\033_Ga=T,s=10,v=50,c=1,r=5,m=1;AAAA\033\\" ).empty() );
     assert( graphics_terminal.act( "\033_Gm=0;BBBB\033\\" ).empty() );
+    /* Placing a 5-row image from the top row of a 5-row screen scrolls
+       once during the placement itself (5 index operations), so the
+       retained sequence is already clipped by one row (10 px) before any
+       newline; the cursor lands on the bottom row. */
     assert( graphics_terminal.get_fb().ds.get_cursor_row() == 4 );
-    assert( graphics_terminal.act( "\n" ).empty() );
     assert( graphics_terminal.get_fb().get_passthrough_sequences().size() == 2 );
     assert( graphics_terminal.get_fb().get_passthrough_sequences().front().cursor_row == 0 );
     assert_contains( graphics_terminal.get_fb().get_passthrough_sequences().front().sequence, "y=10" );
     assert_contains( graphics_terminal.get_fb().get_passthrough_sequences().front().sequence, "h=40" );
     assert_contains( graphics_terminal.get_fb().get_passthrough_sequences().front().sequence, "r=4" );
+    /* each further scroll clips another row (10 px) off the top */
     assert( graphics_terminal.act( "\n" ).empty() );
     assert_contains( graphics_terminal.get_fb().get_passthrough_sequences().front().sequence, "y=20" );
     assert_contains( graphics_terminal.get_fb().get_passthrough_sequences().front().sequence, "h=30" );
     assert_contains( graphics_terminal.get_fb().get_passthrough_sequences().front().sequence, "r=3" );
+    assert( graphics_terminal.act( "\n" ).empty() );
+    assert_contains( graphics_terminal.get_fb().get_passthrough_sequences().front().sequence, "y=30" );
+    assert_contains( graphics_terminal.get_fb().get_passthrough_sequences().front().sequence, "h=20" );
+    assert_contains( graphics_terminal.get_fb().get_passthrough_sequences().front().sequence, "r=2" );
+  }
+
+  {
+    /* Placement inside a scroll region whose bottom is above the screen
+       bottom keeps the cursor at the region bottom, exactly like the
+       equivalent run of IND operations. */
+    Terminal::Complete graphics_terminal( 80, 8 );
+    assert( graphics_terminal.act( "\033[1;5r" ).empty() ); /* region rows 0..4 */
+    assert( graphics_terminal.act( "\033[1;1H" ).empty() );
+    assert( graphics_terminal.act( "\033_Ga=T,s=10,v=50,c=1,r=5,m=1;AAAA\033\\" ).empty() );
+    assert( graphics_terminal.act( "\033_Gm=0;BBBB\033\\" ).empty() );
+
+    Terminal::Complete ind_terminal( 80, 8 );
+    assert( ind_terminal.act( "\033[1;5r" ).empty() );
+    assert( ind_terminal.act( "\033[1;1H" ).empty() );
+    for ( int i = 0; i < 5; i++ ) {
+      assert( ind_terminal.act( "\033D" ).empty() );
+    }
+    assert( ind_terminal.get_fb().ds.get_cursor_row() == 4 );
+    assert( graphics_terminal.get_fb().ds.get_cursor_row() == 4 );
   }
 
   {

@@ -472,17 +472,19 @@ void Framebuffer::move_rows_autoscroll( int rows )
     return;
   }
 
-  if ( ds.get_cursor_row() + rows > ds.get_scrolling_region_bottom_row() ) {
-    int N = ds.get_cursor_row() + rows - ds.get_scrolling_region_bottom_row();
-    scroll( N );
-    ds.move_row( -N, true );
-  } else if ( ds.get_cursor_row() + rows < ds.get_scrolling_region_top_row() ) {
-    int N = ds.get_cursor_row() + rows - ds.get_scrolling_region_top_row();
-    scroll( N );
-    ds.move_row( -N, true );
+  /* Move in one step: composing the motion from two relative moves lets
+     the intermediate move snap at the screen border and land the cursor
+     outside a scrolling region whose bottom is above the screen bottom. */
+  int target = ds.get_cursor_row() + rows;
+  if ( target > ds.get_scrolling_region_bottom_row() ) {
+    scroll( target - ds.get_scrolling_region_bottom_row() );
+    target = ds.get_scrolling_region_bottom_row();
+  } else if ( target < ds.get_scrolling_region_top_row() ) {
+    scroll( target - ds.get_scrolling_region_top_row() );
+    target = ds.get_scrolling_region_top_row();
   }
 
-  ds.move_row( rows, true );
+  ds.move_row( target - ds.get_cursor_row(), true );
 }
 
 Cell* Framebuffer::get_combining_cell( void )
