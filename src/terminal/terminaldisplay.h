@@ -91,7 +91,7 @@ private:
 
 public:
   std::string open() const;
-  std::string close() const;
+  std::string close( bool exit_alternate_screen = true ) const;
 
   void set_scroll_shortcut( bool s ) { scroll_shortcut = s; }
   std::string exit_alternate_screen() const { return std::string( rmcup ? rmcup : "" ); }

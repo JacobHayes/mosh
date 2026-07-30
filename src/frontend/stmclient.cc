@@ -515,6 +515,28 @@ void STMClient::init( void )
   connecting_notification = std::wstring( tmp );
 }
 
+bool STMClient::host_alternate_screen_active( void ) const
+{
+  return !scrollback_active || local_framebuffer.get_alt_screen_active();
+}
+
+std::string STMClient::terminal_close_sequence( void ) const
+{
+  return display.close( host_alternate_screen_active() );
+}
+
+std::string STMClient::terminal_message_line_sequence( void ) const
+{
+  if ( !scrollback_active ) {
+    return std::string();
+  }
+
+  const unsigned int row = window_size.ws_row ? window_size.ws_row : 1;
+  char tmp[64];
+  snprintf( tmp, sizeof tmp, "\033[r\033[0m\033[%u;1H\r\n", row );
+  return std::string( tmp );
+}
+
 void STMClient::shutdown( void )
 {
   /* Restore screen state */
@@ -524,7 +546,8 @@ void STMClient::shutdown( void )
   output_new_frame();
 
   /* Restore terminal and terminal-driver state */
-  swrite( STDOUT_FILENO, display.close().c_str() );
+  const std::string close_sequence = terminal_close_sequence() + terminal_message_line_sequence();
+  swrite( STDOUT_FILENO, close_sequence.data(), close_sequence.size() );
 
   if ( tcsetattr( STDIN_FILENO, TCSANOW, &saved_termios ) < 0 ) {
     perror( "tcsetattr" );
@@ -858,14 +881,17 @@ bool STMClient::process_user_bytes( const char* buf, ssize_t bytes_read )
         return false;
       } else if ( the_byte == 0x1a ) { /* Suspend sequence is escape_key Ctrl-Z */
         /* Restore terminal and terminal-driver state */
-        swrite( STDOUT_FILENO, display.close().c_str() );
+        const std::string close_sequence = terminal_close_sequence() + terminal_message_line_sequence();
+        swrite( STDOUT_FILENO, close_sequence.data(), close_sequence.size() );
 
         if ( tcsetattr( STDIN_FILENO, TCSANOW, &saved_termios ) < 0 ) {
           perror( "tcsetattr" );
           exit( 1 );
         }
 
-        fputs( "\n\033[37;44m[mosh is suspended.]\033[m\n", stdout );
+        fputs( scrollback_active ? "\033[37;44m[mosh is suspended.]\033[m\n"
+                                  : "\n\033[37;44m[mosh is suspended.]\033[m\n",
+               stdout );
 
         fflush( NULL );
 

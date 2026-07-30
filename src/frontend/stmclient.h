@@ -115,6 +115,9 @@ private:
   bool process_user_input( int fd );
   bool process_user_bytes( const char* buf, ssize_t bytes_read );
   bool process_resize( void );
+  bool host_alternate_screen_active( void ) const;
+  std::string terminal_close_sequence( void ) const;
+  std::string terminal_message_line_sequence( void ) const;
 
   void output_new_frame( void );
   /* Returns bytes to write before the frame diff; may mutate
