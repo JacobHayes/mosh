@@ -22,12 +22,23 @@ if [ $# -ne 1 ]; then
     fail "bad arguments %s\n" "$@"
 fi
 
+test_stty()
+{
+    # Homebrew coreutils can put GNU stty first in PATH on macOS, but it
+    # cannot reliably restore Darwin terminal modes. Use the native stty there.
+    if [ "$(uname -s)" = "Darwin" ] && [ -x /bin/stty ]; then
+	/bin/stty "$@"
+    else
+	stty "$@"
+    fi
+}
+
 baseline()
 {
     # We need to control CR and LF individually for this test.
-    TERMIO=$(stty -g)
-    trap 'stty "$TERMIO"' EXIT
-    stty raw
+    TERMIO=$(test_stty -g) || fail "stty -g failed\n"
+    trap 'test_stty "$TERMIO" || fail "stty restore failed\n"' EXIT
+    test_stty raw || fail "stty raw failed\n"
     printf '\033[H\033[J'
     for lines in $(seq 1 25); do
 	for tencols in $(seq 1 8); do
