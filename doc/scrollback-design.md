@@ -76,10 +76,11 @@ New class (src/terminal/terminalhistory.{h,cc}), owned via
 transport sender/receiver all share one ring; per-state progress is recorded
 in plain counters copied by value.
 
-- **Capture point**: `Framebuffer::scroll(N>0)` when the scrolling region is
-  the full screen (top row 0, bottom row height−1). Rows scrolled inside an
-  app-defined margin region do not enter scrollback (matches xterm). Direct
-  `delete_line` (CSI M) never captures.
+- **Capture point**: `Framebuffer::scroll(N>0)` when the scrolling region
+  begins at row 0 on the primary screen. This includes top-anchored partial
+  regions used by inline TUIs to keep a composer or status footer fixed while
+  completed output enters native scrollback. Regions beginning below row 0 do
+  not enter scrollback. Direct `delete_line` (CSI M) never captures.
 - **Logical lines, not display rows**: terminal reflow (Ghostty et al.) only
   rewraps lines the terminal itself soft-wrapped. Mosh `Row`s carry a `wrap`
   flag; scrolled-off rows are stitched: a row with `wrap` set is a prefix of

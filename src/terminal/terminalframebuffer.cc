@@ -408,14 +408,16 @@ void Framebuffer::capture_screen_to_history( void )
 void Framebuffer::scroll( int N )
 {
   if ( N >= 0 ) {
-    /* Rows falling off the top of a full-screen scroll are the
-       session transcript; save them.  Scrolls inside an app-defined
-       margin region don't reach scrollback (matches xterm), and
-       neither does anything on the alternate screen. */
+    /* Rows falling off row zero on the primary screen are the session
+       transcript; save them.  Inline TUIs commonly reserve a fixed
+       footer with a top-anchored scrolling region, so requiring the
+       bottom margin to reach the bottom of the screen would silently
+       discard their transcript.  Regions starting below row zero and
+       alternate-screen scrolls remain private to the application. */
     if ( history && history->capture_enabled() && !alt_screen_active && N > 0
-         && ds.get_scrolling_region_top_row() == 0
-         && ds.get_scrolling_region_bottom_row() == ds.get_height() - 1 ) {
-      const int count = N < ds.get_height() ? N : ds.get_height();
+         && ds.get_scrolling_region_top_row() == 0 ) {
+      const int region_height = ds.get_scrolling_region_bottom_row() + 1;
+      const int count = std::min( N, region_height );
       for ( int i = 0; i < count; i++ ) {
         history->append_row( rows.at( i ), ds.get_width() );
       }

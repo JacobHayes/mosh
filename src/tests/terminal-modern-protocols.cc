@@ -13,6 +13,7 @@
 
 #include "src/statesync/completeterminal.h"
 #include "src/terminal/terminaldisplay.h"
+#include "src/terminal/terminalhistory.h"
 
 static std::string frame_from( const Terminal::Framebuffer& before, const Terminal::Framebuffer& after )
 {
@@ -401,6 +402,60 @@ int main( void )
     }
     assert( c_count == (size_t)c_chunks ); /* in-progress group kept every chunk */
     assert( !has_ab );                     /* older complete groups evicted */
+  }
+
+  {
+    /* Inline TUIs keep a composer/footer below a top-anchored scrolling
+       region.  Rows leaving row zero still belong in native scrollback. */
+    Terminal::Complete inline_terminal( 8, 6 );
+    inline_terminal.enable_history( 1000, true );
+    assert( inline_terminal.act( "A\033[2;1HB\033[3;1HC\033[4;1HD\033[5;1HE\033[6;1HF" ).empty() );
+    assert( inline_terminal.act( "\033[1;4r\033[2S" ).empty() );
+    assert( inline_terminal.get_fb().get_history_row_count() == 2 );
+    const std::shared_ptr<Terminal::HistoryRing>& history = inline_terminal.get_fb().get_history();
+    assert( history->size() == 2 );
+    Terminal::HistoryRing::const_iterator history_it = history->begin();
+    assert_contains( history_it->rendered, "A" );
+    ++history_it;
+    assert_contains( history_it->rendered, "B" );
+    /* The fixed rows below the region are not part of the scroll. */
+    assert_contains( inline_terminal.get_fb().get_cell( 4, 0 )->debug_contents(), "'E'" );
+    assert_contains( inline_terminal.get_fb().get_cell( 5, 0 )->debug_contents(), "'F'" );
+  }
+
+  {
+    /* A large scroll is capped to the top-anchored region, not the
+       framebuffer height. */
+    Terminal::Complete capped_terminal( 8, 6 );
+    capped_terminal.enable_history( 1000, true );
+    assert( capped_terminal.act( "A\033[2;1HB\033[3;1HC\033[4;1HD\033[5;1HE\033[6;1HF" ).empty() );
+    assert( capped_terminal.act( "\033[1;3r\033[99S" ).empty() );
+    assert( capped_terminal.get_fb().get_history_row_count() == 3 );
+    assert( capped_terminal.get_fb().get_history()->size() == 3 );
+    assert_contains( capped_terminal.get_fb().get_cell( 4, 0 )->debug_contents(), "'E'" );
+    assert_contains( capped_terminal.get_fb().get_cell( 5, 0 )->debug_contents(), "'F'" );
+  }
+
+  {
+    /* A region below row zero is application-local and must not enter
+       shell scrollback. */
+    Terminal::Complete inset_terminal( 8, 6 );
+    inset_terminal.enable_history( 1000, true );
+    assert( inset_terminal.act( "A\033[2;1HB\033[3;1HC\033[4;1HD\033[5;1HE\033[6;1HF" ).empty() );
+    assert( inset_terminal.act( "\033[2;4r\033[2S" ).empty() );
+    assert( inset_terminal.get_fb().get_history_row_count() == 0 );
+    assert( inset_terminal.get_fb().get_history()->size() == 0 );
+  }
+
+  {
+    /* Alternate-screen rows stay out of shell scrollback even when the
+       application's scrolling region begins at row zero. */
+    Terminal::Complete alternate_terminal( 8, 6 );
+    alternate_terminal.enable_history( 1000, true );
+    alternate_terminal.set_altscreen_enabled( true );
+    assert( alternate_terminal.act( "\033[?1049hA\033[2;1HB\033[3;1HC\033[1;3r\033[2S" ).empty() );
+    assert( alternate_terminal.get_fb().get_history_row_count() == 0 );
+    assert( alternate_terminal.get_fb().get_history()->size() == 0 );
   }
 
   {
