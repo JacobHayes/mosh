@@ -76,10 +76,11 @@ std::string Display::open() const
 
 std::string Display::close( bool exit_alternate_screen ) const
 {
-  return std::string( "\033[?1l\033[0m\033[?25h\033[0 q\033]112\007"
+  return std::string( "\033[?1l\033[?5l\033[0m\033]8;;\033\\\033[?25h\033[0 q\033]112\007"
                       "\033[>4;0m\033[=0;1u"
-                      "\033[?1003l\033[?1002l\033[?1001l\033[?1000l"
-                      "\033[?1015l\033[?1006l\033[?1005l" )
+                      "\033[?2004l\033[?1004l"
+                      "\033[?1003l\033[?1002l\033[?1001l\033[?1000l\033[?9l"
+                      "\033[?1007l\033[?1015l\033[?1006l\033[?1005l" )
          + std::string( ( exit_alternate_screen && rmcup ) ? rmcup : "" );
 }
 
@@ -404,6 +405,7 @@ std::string Display::new_frame( bool initialized, const Framebuffer& last, const
       frame.append( "\033[?1002l" );
       frame.append( "\033[?1001l" );
       frame.append( "\033[?1000l" );
+      frame.append( "\033[?9l" );
     } else {
       if ( frame.last_frame.ds.mouse_reporting_mode != DrawState::MOUSE_REPORTING_NONE ) {
         snprintf( tmp, sizeof( tmp ), "\033[?%dl", frame.last_frame.ds.mouse_reporting_mode );
@@ -417,6 +419,13 @@ std::string Display::new_frame( bool initialized, const Framebuffer& last, const
   /* has mouse focus mode changed? */
   if ( ( !initialized ) || ( f.ds.mouse_focus_event != frame.last_frame.ds.mouse_focus_event ) ) {
     frame.append( f.ds.mouse_focus_event ? "\033[?1004h" : "\033[?1004l" );
+  }
+
+  /* has xterm alternate-scroll mode changed?  In the alternate screen,
+     this asks the host terminal to translate wheel events into cursor-key
+     input so an application can implement its own scrollback. */
+  if ( ( !initialized ) || ( f.ds.mouse_alternate_scroll != frame.last_frame.ds.mouse_alternate_scroll ) ) {
+    frame.append( f.ds.mouse_alternate_scroll ? "\033[?1007h" : "\033[?1007l" );
   }
 
   /* has mouse encoding mode changed? */

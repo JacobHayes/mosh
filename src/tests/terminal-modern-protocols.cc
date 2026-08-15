@@ -77,6 +77,47 @@ int main( void )
   assert( terminal.act( "\033[?4m" ) == "\033[>4;2m" );
   assert( terminal.act( "\033P$q>4m\033\\" ) == "\033P1$r>4;2m\033\\" );
 
+  {
+    /* Alternate-scroll mode turns wheel events into cursor keys for an
+       alternate-screen application that owns its scrollback. */
+    Terminal::Complete scroll_terminal( 80, 24 );
+    Terminal::Framebuffer scroll_before = scroll_terminal.get_fb();
+    assert( scroll_terminal.act( "\033[?1007h" ).empty() );
+    std::string scroll_frame = frame_from( scroll_before, scroll_terminal.get_fb() );
+    assert_contains( scroll_frame, "\033[?1007h" );
+    scroll_before = scroll_terminal.get_fb();
+    assert( scroll_terminal.act( "\033[?1007l" ).empty() );
+    scroll_frame = frame_from( scroll_before, scroll_terminal.get_fb() );
+    assert_contains( scroll_frame, "\033[?1007l" );
+  }
+
+  {
+    /* X10 mouse mode 9 must be disabled when the application returns to
+       no mouse reporting, just like the newer 1000--1003 modes. */
+    Terminal::Complete mouse_terminal( 80, 24 );
+    Terminal::Framebuffer mouse_before = mouse_terminal.get_fb();
+    assert( mouse_terminal.act( "\033[?9h" ).empty() );
+    std::string mouse_frame = frame_from( mouse_before, mouse_terminal.get_fb() );
+    assert_contains( mouse_frame, "\033[?9h" );
+    mouse_before = mouse_terminal.get_fb();
+    assert( mouse_terminal.act( "\033[?9l" ).empty() );
+    mouse_frame = frame_from( mouse_before, mouse_terminal.get_fb() );
+    assert_contains( mouse_frame, "\033[?9l" );
+  }
+
+  {
+    /* Abruptly leaving mosh must not leak remote application modes or an
+       active hyperlink into the resumed local terminal. */
+    Terminal::Display display( false );
+    const std::string close = display.close( false );
+    assert_contains( close, "\033[?5l" );
+    assert_contains( close, "\033]8;;\033\\" );
+    assert_contains( close, "\033[?2004l" );
+    assert_contains( close, "\033[?1004l" );
+    assert_contains( close, "\033[?9l" );
+    assert_contains( close, "\033[?1007l" );
+  }
+
   assert( act_user_bytes( terminal, "\033[65;5u" ) == "\033[65;5u" );
   assert( act_user_bytes( terminal, "\033OA" ) == "\033[A" );
 
