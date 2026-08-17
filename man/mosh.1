@@ -272,12 +272,11 @@ for the same hostname.
 
 .SH ESCAPE SEQUENCES
 
-The default escape character used by Mosh is ASCII RS (decimal 30).
-This is typically typed as \fBCtrl-^\fP or \fBCtrl-Shift-6\fP, on US
-English keyboards.  Users of non-English keyboards may find it
-difficult or impossible to type the default escape character, and may
-need to change the escape character.  See the description of
-MOSH_ESCAPE_KEY, below.  In this description, the configured escape
+The default escape character used by Mosh is \fB~\fP (tilde), similar
+to \fBOpenSSH\fP.  It is recognized only immediately after a newline;
+for example, press \fBEnter\fP, then \fB~.\fP to shut down the connection.  See
+the description of MOSH_ESCAPE_KEY, below, to configure a different
+escape character.  In this description, the configured escape
 character is represented as \fBEsc\fP.
 
 There are two slightly different modes for escape sequences, depending
@@ -285,8 +284,8 @@ whether the escape character is printable or not.
 
 If the escape character is a printable character, it must be prefixed
 with a newline, similar to \fBOpenSSH\fP.  To send the escape character
-itself, type it twice.  If the escape character is set to \fB~\fP,
-\fBmosh\fP will behave much like \fBOpenSSH\fP.
+itself, type it twice.  With the default escape character of \fB~\fP,
+\fBmosh\fP behaves much like \fBOpenSSH\fP.
 
 If the escape character is a non-printable control character, no
 prefix is used and the escape character is recognized at any time.  To
@@ -295,15 +294,18 @@ corresponding ASCII character (for \fBCtrl-^\fP you would type \fB^\fP,
 for \fBCtrl-B\fP you would type \fBB\fP).
 
 The escape sequence to shut down the connection is
-\fBEsc .\fP. The sequence \fBEsc Ctrl-Z\fP suspends the client.
+\fBEsc .\fP (by default, \fBEnter\fP, then \fB~.\fP). The sequence
+\fBEsc Ctrl-Z\fP suspends the client.
 Any other sequence passes both characters through to the server.
 
 .SH ENVIRONMENT VARIABLES
-These variables are not actually interpreted by
+These variables are not interpreted by the
 .BR mosh (1)
-itself, but are passed through to
-.BR mosh-server (1).
-They are described here for ease of use.
+wrapper itself.  They configure
+.BR mosh-client (1)
+or are passed through to
+.BR mosh-server (1),
+and are described here for ease of use.
 
 .TP
 .B MOSH_ESCAPE_KEY

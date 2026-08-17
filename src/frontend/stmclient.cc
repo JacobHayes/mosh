@@ -462,21 +462,21 @@ void STMClient::init( void )
           escape_pass_key2 = escape_pass_key;
         }
       } else {
-        escape_key = 0x1E;
-        escape_pass_key = '^';
-        escape_pass_key2 = '^';
+        escape_key = DEFAULT_ESCAPE_KEY;
+        escape_pass_key = DEFAULT_ESCAPE_KEY;
+        escape_pass_key2 = DEFAULT_ESCAPE_KEY;
       }
     } else if ( strlen( escape_key_env ) == 0 ) {
       escape_key = -1;
     } else {
-      escape_key = 0x1E;
-      escape_pass_key = '^';
-      escape_pass_key2 = '^';
+      escape_key = DEFAULT_ESCAPE_KEY;
+      escape_pass_key = DEFAULT_ESCAPE_KEY;
+      escape_pass_key2 = DEFAULT_ESCAPE_KEY;
     }
   } else {
-    escape_key = 0x1E;
-    escape_pass_key = '^';
-    escape_pass_key2 = '^';
+    escape_key = DEFAULT_ESCAPE_KEY;
+    escape_pass_key = DEFAULT_ESCAPE_KEY;
+    escape_pass_key2 = DEFAULT_ESCAPE_KEY;
   }
 
   /* There are so many better ways to shoot oneself into leg than
@@ -484,9 +484,9 @@ void STMClient::init( void )
      that we just won't allow that. */
   if ( escape_key == 0x03 || escape_key == 0x04 || escape_key == 0x0A || escape_key == 0x0C
        || escape_key == 0x0D ) {
-    escape_key = 0x1E;
-    escape_pass_key = '^';
-    escape_pass_key2 = '^';
+    escape_key = DEFAULT_ESCAPE_KEY;
+    escape_pass_key = DEFAULT_ESCAPE_KEY;
+    escape_pass_key2 = DEFAULT_ESCAPE_KEY;
   }
 
   /* Adjust escape help differently if escape is a control character. */
@@ -508,7 +508,9 @@ void STMClient::init( void )
     std::wstring escape_key_name = std::wstring( tmp.begin(), tmp.end() );
     escape_key_help
       = L"Commands: Ctrl-Z suspends, \".\" quits, " + escape_pass_name + L" gives literal " + escape_key_name;
-    overlays.get_notification_engine().set_escape_key_string( tmp );
+    const std::string quit_escape_name
+      = escape_requires_lf ? "Enter " + std::string( 1, static_cast<char>( escape_key ) ) : tmp;
+    overlays.get_notification_engine().set_escape_key_string( quit_escape_name );
   }
   wchar_t tmp[128];
   swprintf( tmp, 128, L"Nothing received from server on UDP port %s.", port.c_str() );
@@ -871,7 +873,7 @@ bool STMClient::process_user_bytes( const char* buf, ssize_t bytes_read )
     }
 
     if ( quit_sequence_started ) {
-      if ( the_byte == '.' ) { /* Quit sequence is Ctrl-^ . */
+      if ( the_byte == '.' ) { /* Quit sequence is escape_key . */
         if ( net.has_remote_addr() && ( !net.shutdown_in_progress() ) ) {
           overlays.get_notification_engine().set_notification_string( std::wstring( L"Exiting on user request..." ),
                                                                       true );
